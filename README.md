@@ -12,7 +12,6 @@ An agent creates a persistent watch once: "tell me when this page changes", "tel
 ## Quick start
 
 ```bash
-cd watchtower
 cp .env.example .env
 docker compose up --build          # app on http://localhost:3000, Postgres alongside
 docker compose --profile demo run --rm demo   # the end-to-end demo below
@@ -212,7 +211,7 @@ The suite has three parts:
 - Property-based fuzz tests (fast-check) over the HTML, JSON-LD, feed, robots and date parsers and the diff invariants.
 - Integration tests covering REST, MCP, sharing, noise suppression, host leases, concurrent checks, caps, expiry and retention, webhooks, rate limits and metrics.
 
-CI (`.github/workflows/watchtower.yml`) runs typecheck, all tests against a Postgres service, the build and the demo. It also builds the Docker image and smoke-tests it: migrations, `/health`, `/metrics`, the homepage, and the non-root user.
+CI (`.github/workflows/ci.yml`) runs typecheck, all tests against a Postgres service, the build and the demo. It also builds the Docker image and smoke-tests it: migrations, `/health`, `/metrics`, the homepage, and the non-root user.
 
 ```
 src/
