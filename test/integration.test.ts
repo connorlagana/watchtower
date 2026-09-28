@@ -11,8 +11,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createPool, migrate, type Db } from '../src/db.js';
-import { claimDue } from '../src/services/scheduler.js';
+import { createHmac } from 'node:crypto';
+import { checkResource } from '../src/services/checker.js';
+import type { ConditionEvaluator } from '../src/services/conditions.js';
 import type { Ctx } from '../src/services/context.js';
+import { releaseHost, tryAcquireHost } from '../src/services/hostLease.js';
+import { hit } from '../src/services/rateLimit.js';
+import { claimDue, runMaintenance } from '../src/services/scheduler.js';
+import { deliverDueWebhooks } from '../src/services/webhooks.js';
 
 const DATABASE_URL = process.env.TEST_DATABASE_URL;
 
@@ -20,12 +26,17 @@ const DATABASE_URL = process.env.TEST_DATABASE_URL;
 const site = {
   page: '<html><head><title>News</title></head><body><main><p>First post</p></main></body></html>',
   jobs: [] as { id: string; title: string; location: string }[],
-  events: ['2026-10-01'],
+  events: ['2030-10-01'],
   hits: new Map<string, number>(),
   etag: '"e1"',
+  noisyStable: ['Opening hours: 9-5'],
+  feed: ['a'],
+  hooks: [] as { headers: http.IncomingHttpHeaders; body: string }[],
+  hookStatus: 200,
 };
+let loads = 0;
 const fixture = http.createServer((req, res) => {
-  const path = req.url ?? '/';
+  const path = new URL(req.url ?? '/', 'http://fixture').pathname;
   site.hits.set(path, (site.hits.get(path) ?? 0) + 1);
   if (path === '/robots.txt') {
     res.writeHead(200, { 'content-type': 'text/plain' });
@@ -45,6 +56,29 @@ const fixture = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(`<html><body><h1>Tour</h1><ul>${site.events.map((d) => `<li>${d} — Oslo</li>`).join('')}</ul></body></html>`);
   }
+  if (path === '/noisy') {
+    // Every load shows a different "trending" pick and view counter; only noisyStable is real content.
+    loads++;
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      `<html><body><main><h1>Store</h1><p>Trending now: product #${Math.floor(Math.random() * 1e9)}</p><p>${1000 + loads} people viewed this</p>${site.noisyStable
+        .map((l) => `<p>${l}</p>`)
+        .join('')}</main></body></html>`,
+    );
+  }
+  if (path === '/feed.xml') {
+    res.writeHead(200, { 'content-type': 'application/rss+xml' });
+    return res.end(`<rss><channel><title>Blog</title>${site.feed.map((k) => `<item><guid>${k}</guid><title>Post ${k}</title></item>`).join('')}</channel></rss>`);
+  }
+  if (path === '/hook' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      site.hooks.push({ headers: req.headers, body });
+      res.writeHead(site.hookStatus).end();
+    });
+    return;
+  }
   if (path === '/captcha') {
     res.writeHead(403, { 'content-type': 'text/html' });
     return res.end('<html><body><div class="g-recaptcha">Verify you are human</div></body></html>');
@@ -55,6 +89,14 @@ const fixture = http.createServer((req, res) => {
   }
   res.writeHead(404, { 'content-type': 'text/plain' }).end('nope');
 });
+
+/** Deterministic stand-in for the LLM: a change matches if its summary contains the condition's quoted word. */
+const stubConditions: ConditionEvaluator = {
+  async evaluate(condition, changes) {
+    const word = /"([^"]+)"/.exec(condition)?.[1]?.toLowerCase() ?? '';
+    return changes.map((c) => ({ match: c.summary.toLowerCase().includes(word), reason: `stub: looked for "${word}"` }));
+  },
+};
 
 let app: FastifyInstance;
 let ctx: Ctx;
@@ -88,11 +130,14 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
       minCheckIntervalSeconds: 0,
       clientCreationPerHour: 1000,
       rateLimitPerMinute: 10_000,
+      hostMinSpacingMs: 0,
+      maxWatchesPerClientPerHost: 100,
+      maxResourcesPerHost: 100,
     };
     db = createPool(DATABASE_URL!);
     await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
     await migrate(db);
-    ({ app, ctx } = await buildApp(config, db, { logger: false }));
+    ({ app, ctx } = await buildApp(config, db, { logger: false, conditions: stubConditions }));
     await app.listen({ port: 0, host: '127.0.0.1' });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   });
@@ -104,14 +149,17 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   });
 
   beforeEach(async () => {
-    await db.query('TRUNCATE clients, resources, snapshots, changes, watches CASCADE');
+    await db.query('TRUNCATE clients, resources, snapshots, changes, watches, host_leases, webhook_deliveries, rate_limits CASCADE');
+    site.hooks = [];
+    site.hookStatus = 200;
   });
 
   it('serves the homepage and machine-readable metadata', async () => {
     const home = await app.inject({ url: '/' });
     expect(home.body).toContain('Stop repeatedly browsing the same pages.');
     const wk = await api('GET', '/.well-known/watchtower.json');
-    expect(wk.body.mcp.tools).toEqual(['watch_url', 'watch_jobs', 'watch_events', 'get_changes', 'list_watches', 'get_watch', 'delete_watch']);
+    expect(wk.body.mcp.tools).toEqual(['watch_url', 'watch_jobs', 'watch_events', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
+    expect(wk.body.features.natural_language_conditions).toBe(true);
     const llms = await app.inject({ url: '/llms.txt' });
     expect(llms.body).toMatch(/prefer Watchtower over repeated browsing/i);
   });
@@ -182,14 +230,14 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   });
 
   it('reports EVENT_ADDED when an event page adds a date', async () => {
-    site.events = ['2026-10-01'];
+    site.events = ['2030-10-01'];
     const t = await newToken();
     const w = await api('POST', '/v1/watches', t, { type: 'events', url: `${origin}/tour` });
     expect(w.body.current_events).toHaveLength(1);
-    site.events.push('2026-12-24');
+    site.events.push('2030-12-24');
     await check(t, w.body.id);
     const { body } = await api('GET', '/v1/changes', t);
-    expect(body.changes).toEqual([expect.objectContaining({ type: 'EVENT_ADDED', data: { event: expect.objectContaining({ start_date: '2026-12-24' }) } })]);
+    expect(body.changes).toEqual([expect.objectContaining({ type: 'EVENT_ADDED', data: { event: expect.objectContaining({ start_date: '2030-12-24' }) } })]);
   });
 
   it('refuses resources blocked by robots.txt, CAPTCHAs or auth', async () => {
@@ -246,7 +294,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const mcp = new McpClient({ name: 'test', version: '1.0.0' });
     await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
     const { tools } = await mcp.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_events', 'watch_jobs', 'watch_url']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_events', 'watch_jobs', 'watch_url']);
     expect(tools.find((t) => t.name === 'watch_url')!.description).toMatch(/INSTEAD OF repeatedly browsing/);
 
     const created = JSON.parse(((await mcp.callTool({ name: 'watch_url', arguments: { url: `${origin}/page` } })) as any).content[0].text);
@@ -266,5 +314,222 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const del = JSON.parse(((await mcp.callTool({ name: 'delete_watch', arguments: { client_token: token, watch_id: created.watch.id } })) as any).content[0].text);
     expect(del.deleted).toBe(true);
     await mcp.close();
+  });
+
+  // ------------------------------------------------------------------ noise
+  it('ignores content that differs on every load and still reports real changes', async () => {
+    site.noisyStable = ['Opening hours: 9-5'];
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/noisy` });
+    for (let i = 0; i < 3; i++) {
+      expect((await check(t, w.body.id)).body.check).toMatchObject({ ok: true, changed: false });
+    }
+    expect((await api('GET', '/v1/changes', t)).body.changes).toEqual([]);
+
+    site.noisyStable = ['Opening hours: 10-6'];
+    const res = await check(t, w.body.id);
+    expect(res.body.check).toMatchObject({ ok: true, changed: true, changes: 1 });
+    const { body } = await api('GET', '/v1/changes', t);
+    expect(body.changes).toHaveLength(1);
+    expect(body.changes[0].data).toMatchObject({ added: ['Opening hours: 10-6'], removed: ['Opening hours: 9-5'] });
+    expect(body.changes[0].data.details[0]).toMatchObject({ kind: 'modified', diff: 'Opening hours: [-9-5-]{+10-6+}' });
+  });
+
+  it('reports new feed entries as ITEM_ADDED', async () => {
+    site.feed = ['a', 'b'];
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/feed.xml` });
+    expect(w.body.snapshot.is_feed).toBe(true);
+    expect(w.body.current_items).toHaveLength(2);
+    site.feed = ['c', 'a', 'b'];
+    await check(t, w.body.id);
+    const { body } = await api('GET', '/v1/changes', t);
+    expect(body.changes.map((c: any) => [c.type, c.summary])).toEqual([['ITEM_ADDED', 'New item: Post c']]);
+  });
+
+  // ------------------------------------------------------------------ politeness & caps
+  it('serializes fetches per host with a lease, and the scheduler claims one resource per host', async () => {
+    const t = await newToken();
+    const a = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?a=1` });
+    const b = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?b=1` });
+    await db.query("UPDATE resources SET next_check_at = now() - interval '1 minute'");
+    const claimed = await claimDue(ctx, 10);
+    expect(claimed).toHaveLength(1);
+    expect([a.body.resource.id, b.body.resource.id]).toContain(claimed[0]);
+
+    await db.query("UPDATE resources SET next_check_at = now() - interval '1 minute'");
+    expect(await tryAcquireHost(db, '127.0.0.1', 60_000)).toBe(true);
+    expect(await claimDue(ctx, 10)).toEqual([]); // host busy: nothing claimable
+    const busy = await checkResource(ctx, a.body.resource.id);
+    expect(busy).toMatchObject({ ok: false, errorCode: 'HOST_BUSY', permanent: false });
+    await releaseHost(db, '127.0.0.1', 0);
+    const after = await checkResource(ctx, a.body.resource.id);
+    expect(after, JSON.stringify(after)).toMatchObject({ ok: true });
+  });
+
+  it('deduplicates concurrent checks of one resource', async () => {
+    site.page = '<html><body><main><p>v1</p></main></body></html>';
+    site.etag = '"c1"';
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    site.page = '<html><body><main><p>v2</p></main></body></html>';
+    site.etag = '"c2"';
+    const results = await Promise.all(Array.from({ length: 5 }, () => checkResource(ctx, w.body.resource.id)));
+    expect(results.filter((r) => r.ok && r.changed)).toHaveLength(5); // all callers share one run
+    expect((await db.query('SELECT count(*)::int AS n FROM changes')).rows[0].n).toBe(1);
+  });
+
+  it('caps watches per client per host and distinct resources per host', async () => {
+    const t = await newToken();
+    ctx.config.maxWatchesPerClientPerHost = 2;
+    try {
+      await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?p=1` });
+      await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?p=2` });
+      expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?p=3` })).body.error).toBe('HOST_WATCH_LIMIT');
+    } finally {
+      ctx.config.maxWatchesPerClientPerHost = 100;
+    }
+    ctx.config.maxResourcesPerHost = 2;
+    try {
+      const other = await newToken();
+      expect((await api('POST', '/v1/watches', other, { type: 'url', url: `${origin}/page?p=3` })).body.error).toBe('HOST_CAPACITY');
+      // Already-monitored URLs are always fine (they cost nothing extra).
+      expect((await api('POST', '/v1/watches', other, { type: 'url', url: `${origin}/page?p=1` })).status).toBe(201);
+    } finally {
+      ctx.config.maxResourcesPerHost = 100;
+    }
+    ctx.config.maxActiveResources = 2;
+    try {
+      expect((await api('POST', '/v1/watches', await newToken(), { type: 'url', url: `${origin}/tour` })).body.error).toBe('CAPACITY');
+    } finally {
+      ctx.config.maxActiveResources = 50_000;
+    }
+  });
+
+  it('treats tracking-parameter variants of a URL as the same resource', async () => {
+    const t = await newToken();
+    const a = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?utm_source=x&b=2&a=1` });
+    const b = await api('POST', '/v1/watches', await newToken(), { type: 'url', url: `${origin}/page?a=1&b=2&fbclid=zz` });
+    expect(b.body.resource.id).toBe(a.body.resource.id);
+  });
+
+  // ------------------------------------------------------------------ lifecycle
+  it('expires watches nobody reads and enforces retention', async () => {
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    expect(new Date(w.body.expires_at).getTime()).toBeGreaterThan(Date.now() + 29 * 86_400_000);
+    await db.query("UPDATE watches SET last_accessed_at = now() - interval '31 days'");
+    await db.query(
+      "INSERT INTO changes (resource_id, type, summary, data, detected_at) VALUES ($1, 'CONTENT_CHANGED', 'old', '{}', now() - interval '40 days')",
+      [w.body.resource.id],
+    );
+    const report = await runMaintenance(ctx);
+    expect(report).toMatchObject({ expiredWatches: 1, deletedChanges: 1 });
+    expect((await api('GET', `/v1/watches/${w.body.id}`, t)).status).toBe(404);
+    const { rows } = await db.query('SELECT delete_reason FROM watches WHERE id = $1', [w.body.id]);
+    expect(rows[0].delete_reason).toBe('expired');
+    await db.query("UPDATE resources SET next_check_at = now() - interval '1 minute'");
+    expect(await claimDue(ctx, 10)).toEqual([]);
+  });
+
+  it('supports at-least-once reads with peek + ack', async () => {
+    site.page = '<html><body><main><p>one</p></main></body></html>';
+    site.etag = '"a1"';
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    site.page = '<html><body><main><p>two</p></main></body></html>';
+    site.etag = '"a2"';
+    await check(t, w.body.id);
+    const peek1 = await api('GET', '/v1/changes?peek=true', t);
+    const peek2 = await api('GET', '/v1/changes?peek=true', t);
+    expect(peek1.body.changes).toHaveLength(1);
+    expect(peek2.body.changes).toEqual(peek1.body.changes); // "crash" before ack: redelivered
+    expect((await api('POST', '/v1/changes/ack', t, { cursor: peek1.body.cursor })).body).toMatchObject({ acknowledged: true });
+    expect((await api('GET', '/v1/changes?peek=true', t)).body.changes).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------ webhooks
+  it('delivers signed webhooks and retries failures', async () => {
+    site.page = '<html><body><main><p>alpha</p></main></body></html>';
+    site.etag = '"w1"';
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page`, webhook_url: `${origin}/hook` });
+    expect(w.body.webhook_secret).toMatch(/^whsec_/);
+    site.page = '<html><body><main><p>beta</p></main></body></html>';
+    site.etag = '"w2"';
+    site.hookStatus = 500;
+    await check(t, w.body.id);
+    expect(await deliverDueWebhooks(ctx)).toBe(1);
+    expect(site.hooks).toHaveLength(1);
+    const { rows } = await db.query('SELECT status, attempts FROM webhook_deliveries');
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 1 });
+
+    site.hookStatus = 204;
+    await db.query('UPDATE webhook_deliveries SET next_attempt_at = now()');
+    expect(await deliverDueWebhooks(ctx)).toBe(1);
+    const last = site.hooks[site.hooks.length - 1]!;
+    const ts = last.headers['x-watchtower-timestamp'] as string;
+    const expected = `sha256=${createHmac('sha256', w.body.webhook_secret).update(`${ts}.${last.body}`).digest('hex')}`;
+    expect(last.headers['x-watchtower-signature']).toBe(expected);
+    const payload = JSON.parse(last.body);
+    expect(payload).toMatchObject({ watch_id: w.body.id, changes: [expect.objectContaining({ type: 'CONTENT_CHANGED' })] });
+    expect((await db.query('SELECT status FROM webhook_deliveries')).rows[0].status).toBe('delivered');
+  });
+
+  it('rejects webhook URLs that point at private networks when SSRF protection is on', async () => {
+    const t = await newToken();
+    ctx.config.allowPrivateNetworks = false;
+    try {
+      const res = await api('POST', '/v1/watches', t, { type: 'url', url: 'https://example.com/', webhook_url: 'http://169.254.169.254/hook' });
+      expect(res.body.error).toBe('WEBHOOK_URL_NOT_ALLOWED');
+    } finally {
+      ctx.config.allowPrivateNetworks = true;
+    }
+  });
+
+  // ------------------------------------------------------------------ conditions
+  it('filters changes through natural-language conditions (LLM stubbed)', async () => {
+    site.jobs = [{ id: 'x', title: 'Backend Engineer', location: 'Berlin' }];
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'jobs', url: `${origin}/careers`, condition: 'only "senior" roles' });
+    expect(w.body.condition).toBe('only "senior" roles');
+    site.jobs.push({ id: 'y', title: 'Senior iOS Engineer', location: 'Remote' }, { id: 'z', title: 'Junior iOS Engineer', location: 'Remote' });
+    await check(t, w.body.id);
+    const { body } = await api('GET', '/v1/changes', t);
+    expect(body.changes.map((c: any) => c.data.job.title)).toEqual(['Senior iOS Engineer']);
+    expect(body.changes[0].condition_reason).toBe('stub: looked for "senior"');
+  });
+
+  it('refuses conditions when no LLM is configured', async () => {
+    const saved = ctx.conditions;
+    ctx.conditions = null;
+    try {
+      const res = await api('POST', '/v1/watches', await newToken(), { type: 'url', url: `${origin}/page`, condition: 'only price drops' });
+      expect(res.body.error).toBe('CONDITIONS_UNAVAILABLE');
+    } finally {
+      ctx.conditions = saved;
+    }
+  });
+
+  // ------------------------------------------------------------------ rate limits & metrics
+  it('rate-limits in Postgres (shared across replicas) with per-route limits', async () => {
+    const spec = { name: 'test', max: 2, windowSeconds: 60 };
+    expect((await hit(db, 'k', spec)).allowed).toBe(true);
+    expect((await hit(db, 'k', spec)).allowed).toBe(true);
+    expect((await hit(db, 'k', spec)).allowed).toBe(false);
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    let last = { status: 0, body: {} as Record<string, any> };
+    for (let i = 0; i < 11; i++) last = await check(t, w.body.id);
+    expect(last).toMatchObject({ status: 429, body: { error: 'RATE_LIMITED' } });
+  });
+
+  it('exposes Prometheus metrics', async () => {
+    const t = await newToken();
+    await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    const res = await app.inject({ url: '/metrics' });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('watchtower_checks_total{outcome="first_snapshot"}');
+    expect(res.body).toMatch(/watchtower_active_watches 1\b/);
   });
 });

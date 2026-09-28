@@ -18,6 +18,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 process.env.ALLOW_PRIVATE_NETWORKS = 'true';
 process.env.MIN_CHECK_INTERVAL_SECONDS = '0';
 process.env.RUN_SCHEDULER = 'false';
+process.env.HOST_MIN_SPACING_MS = '250';
 
 const { loadConfig } = await import('../src/config.js');
 const { createPool, migrate } = await import('../src/db.js');

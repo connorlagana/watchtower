@@ -11,10 +11,22 @@ describe('HTML normalization', () => {
       $20</p>${extra}<!-- build ${Math.random()} --></main>
     <input type="hidden" name="csrf" value="${Math.random()}"><div hidden>secret</div></body></html>`;
 
-  it('drops scripts, styles, comments, hidden elements and collapses whitespace', () => {
+  it('drops scripts, styles, comments, hidden elements and navigation, and collapses whitespace', () => {
     const x = extractHtml(page(''));
     expect(x.title).toBe('Pricing');
-    expect(x.text).toBe('Home\nPlans\nPro costs $20');
+    expect(x.text).toBe('Plans\nPro costs $20');
+  });
+
+  it('prefers main content and drops site chrome and consent banners', () => {
+    const html = `<html><body><header><a>Logo</a> Sale ends in 3h</header><div class="cookie-banner">We use cookies. Accept?</div>
+      <main><h1>Jobs</h1><p>${'Real content. '.repeat(30)}</p></main><aside>Trending: A</aside><footer>© 2030 · Updated daily</footer></body></html>`;
+    const x = extractHtml(html);
+    expect(x.text.startsWith('Jobs\nReal content.')).toBe(true);
+    expect(x.text).not.toMatch(/cookies|Trending|Sale ends|©/);
+  });
+
+  it('keeps pages that are nothing but "chrome"', () => {
+    expect(extractHtml('<html><body><nav>Only nav text here</nav></body></html>').text).toBe('Only nav text here');
   });
 
   it('is stable across volatile noise', () => {
@@ -30,6 +42,12 @@ describe('HTML normalization', () => {
 
   it('renders JSON deterministically', () => {
     expect(stableJsonLines({ b: 1, a: [true, { c: null }] })).toEqual(['a.0: true', 'a.1.c: null', 'b: 1']);
+  });
+
+  it('keys JSON arrays by id so inserting an element does not renumber the rest', () => {
+    const before = stableJsonLines({ items: [{ id: 'a', v: 1 }, { id: 'b', v: 2 }] });
+    const after = stableJsonLines({ items: [{ id: 'z', v: 0 }, { id: 'a', v: 1 }, { id: 'b', v: 2 }] });
+    expect(after.filter((l) => !before.includes(l))).toEqual(['items.[id=z].id: "z"', 'items.[id=z].v: 0']);
   });
 });
 
@@ -58,6 +76,28 @@ describe('JSON-LD', () => {
   });
 });
 
+describe('feeds', () => {
+  it('parses RSS items', () => {
+    const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>Blog</title>
+      <item><title>Hello</title><link>https://b.test/hello</link><guid>g1</guid><pubDate>Mon, 01 Jan 2030 00:00:00 GMT</pubDate></item>
+      <item><title><![CDATA[Second <b>post</b>]]></title><link>https://b.test/2</link></item></channel></rss>`;
+    const x = extract('html', rss, 'application/rss+xml');
+    expect(x.isFeed).toBe(true);
+    expect(x.title).toBe('Blog');
+    expect(x.items).toEqual([
+      expect.objectContaining({ key: 'item:g1', title: 'Hello', url: 'https://b.test/hello' }),
+      expect.objectContaining({ key: 'item:https://b.test/2', title: 'Second post' }),
+    ]);
+  });
+
+  it('parses Atom entries (sniffed from the body)', () => {
+    const atom = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Changelog</title>
+      <entry><id>urn:1</id><title>v2.0</title><link rel="alternate" href="/v2"/><updated>2030-01-01T00:00:00Z</updated></entry></feed>`;
+    const x = extract('html', atom, 'application/xml', { baseUrl: 'https://c.test/feed' });
+    expect(x.items).toEqual([expect.objectContaining({ key: 'item:urn:1', title: 'v2.0', url: 'https://c.test/v2' })]);
+  });
+});
+
 describe('text date fallback', () => {
   it('finds dates in several formats and dedupes them', () => {
     const dates = extractTextDates('Tour\nOct 12, 2026 — Berlin\n12 October 2026 (again)\nMarch 3rd 2027 Paris\n2027-04-05 Rome\nFeb 30, 2026 invalid');
@@ -80,8 +120,35 @@ describe('adapters', () => {
     expect(resolveSource('https://acme.test/careers#top', 'jobs')).toEqual({ adapter: 'html', fetchUrl: 'https://acme.test/careers' });
   });
 
-  it('canonicalizes URLs', () => {
+  it('canonicalizes URLs, dropping tracking parameters and sorting the query', () => {
     expect(canonicalUrl('HTTPS://Example.COM:443/a?b=1#frag')).toBe('https://example.com/a?b=1');
+    expect(canonicalUrl('https://x.test/p?utm_source=nl&z=2&fbclid=abc&a=1&gclid=q')).toBe('https://x.test/p?a=1&z=2');
+    expect(canonicalUrl('https://x.test/p?utm_campaign=x')).toBe('https://x.test/p');
+  });
+
+  it('maps Ashby, Workable, SmartRecruiters and Recruitee boards to their public APIs', () => {
+    expect(resolveSource('https://jobs.ashbyhq.com/acme', 'jobs')).toEqual({ adapter: 'ashby', fetchUrl: 'https://api.ashbyhq.com/posting-api/job-board/acme' });
+    expect(resolveSource('https://apply.workable.com/acme/', 'jobs')).toEqual({ adapter: 'workable', fetchUrl: 'https://apply.workable.com/api/v1/widget/accounts/acme' });
+    expect(resolveSource('https://acme.workable.com/', 'jobs').adapter).toBe('workable');
+    expect(resolveSource('https://jobs.smartrecruiters.com/Acme1', 'jobs')).toEqual({ adapter: 'smartrecruiters', fetchUrl: 'https://api.smartrecruiters.com/v1/companies/Acme1/postings?limit=100' });
+    expect(resolveSource('https://acme.recruitee.com/o/ios', 'jobs')).toEqual({ adapter: 'recruitee', fetchUrl: 'https://acme.recruitee.com/api/offers/' });
+  });
+
+  it('parses Ashby, Workable, SmartRecruiters and Recruitee responses', () => {
+    expect(
+      extract('ashby', JSON.stringify({ jobs: [{ id: 'a1', title: 'iOS Eng', location: 'NYC', isRemote: true, department: 'Eng', jobUrl: 'https://j/a1', isListed: true }, { id: 'h', title: 'Hidden', isListed: false }] }), 'application/json').jobs,
+    ).toEqual([{ key: 'job:ashby:a1', title: 'iOS Eng', location: 'NYC, Remote', department: 'Eng', url: 'https://j/a1', posted_at: undefined, source: 'ashby' }]);
+    expect(
+      extract('workable', JSON.stringify({ name: 'Acme', jobs: [{ shortcode: 'W1', title: 'Designer', city: 'Berlin', country: 'Germany', url: 'https://w/W1' }] }), 'application/json').jobs[0],
+    ).toMatchObject({ key: 'job:workable:w1'.replace('w1', 'W1'), title: 'Designer', location: 'Berlin, Germany', company: 'Acme' });
+    expect(
+      extract('smartrecruiters', JSON.stringify({ content: [{ id: '99', name: 'Android Dev', location: { city: 'Paris', remote: true }, department: { label: 'Mobile' } }] }), 'application/json', {
+        baseUrl: 'https://api.smartrecruiters.com/v1/companies/Acme1/postings?limit=100',
+      }).jobs[0],
+    ).toMatchObject({ title: 'Android Dev', location: 'Paris, Remote', department: 'Mobile', url: 'https://jobs.smartrecruiters.com/Acme1/99' });
+    expect(
+      extract('recruitee', JSON.stringify({ offers: [{ id: 5, title: 'PM', location: 'Remote', careers_url: 'https://r/5' }] }), 'application/json').jobs[0],
+    ).toMatchObject({ key: 'job:recruitee:5', title: 'PM', location: 'Remote', url: 'https://r/5' });
   });
 
   it('parses Greenhouse job-board API responses', () => {

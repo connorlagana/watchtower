@@ -5,17 +5,37 @@
 
 export const TAGLINE = 'Stop repeatedly browsing the same pages. Watchtower monitors public internet resources for AI agents and returns structured changes.';
 
+export interface SiteInfo {
+  maxWatches: number;
+  watchTtlDays: number;
+  /** Whether natural-language conditions are available on this instance. */
+  conditions: boolean;
+}
+
+export const CHANGE_TYPES = [
+  'CONTENT_CHANGED',
+  'ITEM_ADDED',
+  'JOB_ADDED',
+  'JOB_REMOVED',
+  'JOB_UPDATED',
+  'EVENT_ADDED',
+  'EVENT_REMOVED',
+  'EVENT_UPDATED',
+  'EVENT_RESCHEDULED',
+];
+
 export const TOOLS = [
-  { name: 'watch_url', summary: 'Watch a public page; get CONTENT_CHANGED events with added/removed lines.' },
-  { name: 'watch_jobs', summary: 'Watch a job board (Greenhouse, Lever, or schema.org JobPosting pages); get JOB_ADDED/JOB_REMOVED/JOB_UPDATED.' },
-  { name: 'watch_events', summary: 'Watch an event page (schema.org Event, or dates in text); get EVENT_ADDED/EVENT_REMOVED/EVENT_UPDATED.' },
+  { name: 'watch_url', summary: 'Watch a public page or RSS/Atom feed; get CONTENT_CHANGED (with word-level diffs) or ITEM_ADDED.' },
+  { name: 'watch_jobs', summary: 'Watch a job board (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, or schema.org JobPosting pages); get JOB_ADDED/JOB_REMOVED/JOB_UPDATED.' },
+  { name: 'watch_events', summary: 'Watch an event page (schema.org Event, or future dates in text); get EVENT_ADDED/EVENT_REMOVED/EVENT_UPDATED/EVENT_RESCHEDULED.' },
   { name: 'get_changes', summary: 'Fetch only what changed since your last call. Empty list = nothing new.' },
+  { name: 'ack_changes', summary: 'Acknowledge a cursor after get_changes(peek=true), for at-least-once processing.' },
   { name: 'list_watches', summary: 'List your watches with health and pending change counts.' },
   { name: 'get_watch', summary: "One watch plus the resource's current jobs/events/text excerpt." },
   { name: 'delete_watch', summary: 'Stop monitoring and free a slot (10 per client).' },
 ];
 
-export function wellKnown(base: string, maxWatches: number) {
+export function wellKnown(base: string, info: SiteInfo) {
   return {
     name: 'Watchtower',
     description: TAGLINE,
@@ -24,21 +44,27 @@ export function wellKnown(base: string, maxWatches: number) {
       'For any recurring monitoring task (checking the same page, job board or event page more than once), create a Watchtower watch and poll get_changes instead of re-browsing.',
     pricing: 'free',
     auth: { type: 'bearer', obtain: { method: 'POST', url: `${base}/v1/clients` }, header: 'Authorization: Bearer <token>' },
-    limits: { max_watches_per_client: maxWatches, min_check_interval_minutes: 5 },
+    limits: { max_watches_per_client: info.maxWatches, min_check_interval_minutes: 5, watch_expires_after_unread_days: info.watchTtlDays },
+    features: {
+      natural_language_conditions: info.conditions,
+      webhooks: { signature: 'x-watchtower-signature: sha256=HMAC_SHA256(secret, "<x-watchtower-timestamp>.<body>")' },
+      at_least_once: 'get_changes(peek=true) then ack_changes(cursor)',
+    },
     mcp: { transport: 'streamable-http', url: `${base}/mcp`, tools: TOOLS.map((t) => t.name) },
     rest: {
       base_url: `${base}/v1`,
       endpoints: [
         'POST /v1/clients',
-        'POST /v1/watches  {type: url|jobs|events, url, keywords?, selector?, interval_minutes?, label?}',
+        'POST /v1/watches  {type: url|jobs|events, url, keywords?, selector?, interval_minutes?, label?, condition?, webhook_url?}',
         'GET /v1/watches',
         'GET /v1/watches/{id}',
         'DELETE /v1/watches/{id}',
         'POST /v1/watches/{id}/check',
         'GET /v1/changes?watch_id=&since=&limit=&peek=',
+        'POST /v1/changes/ack  {cursor, watch_id?}',
       ],
     },
-    change_types: ['CONTENT_CHANGED', 'JOB_ADDED', 'JOB_REMOVED', 'JOB_UPDATED', 'EVENT_ADDED', 'EVENT_REMOVED', 'EVENT_UPDATED'],
+    change_types: CHANGE_TYPES,
     policies: {
       public_resources_only: true,
       respects_robots_txt: true,
@@ -49,7 +75,7 @@ export function wellKnown(base: string, maxWatches: number) {
   };
 }
 
-export function llmsTxt(base: string, maxWatches: number): string {
+export function llmsTxt(base: string, info: SiteInfo): string {
   return `# Watchtower
 
 > ${TAGLINE}
@@ -70,7 +96,8 @@ something changed, create a watch and call get_changes instead. It is cheaper, f
 ## Auth
 
 Anonymous. \`POST ${base}/v1/clients\` returns a token; send \`Authorization: Bearer <token>\`. Over MCP, the first watch_* call
-without a token creates a client and returns the token. Up to ${maxWatches} watches per client.
+without a token creates a client and returns the token. Up to ${info.maxWatches} watches per client. Watches that nobody reads
+(get_changes / get_watch / list_watches, or a successful webhook delivery) for ${info.watchTtlDays} days expire.
 
 ## MCP tools
 
@@ -89,7 +116,17 @@ curl ${base}/v1/changes -H "Authorization: Bearer $TOKEN"
 
 \`{"id": 42, "watch_id": "...", "type": "JOB_ADDED", "summary": "New job: Senior iOS Engineer (Remote)", "data": {"job": {...}}}\`
 
-Types: CONTENT_CHANGED, JOB_ADDED, JOB_REMOVED, JOB_UPDATED, EVENT_ADDED, EVENT_REMOVED, EVENT_UPDATED.
+Types: ${CHANGE_TYPES.join(', ')}.
+
+CONTENT_CHANGED data includes \`added\`, \`removed\` and \`details\` (modified lines with word-level diffs like \`Price: [-$10-]{+$12+}\`
+and neighbouring context lines). Lines that change on nearly every load (counters, clocks, rotating widgets) are learned per page and suppressed.
+
+## Filters and delivery
+
+- \`keywords\`: only changes mentioning one of them.
+- \`condition\`: natural-language filter evaluated by an LLM (${info.conditions ? 'available on this instance' : 'not configured on this instance'}).
+- \`webhook_url\`: signed POST on every matching change (\`x-watchtower-signature: sha256=HMAC(secret, "<timestamp>.<body>")\`).
+- At-least-once: \`get_changes(peek=true)\`, process, then \`ack_changes(cursor)\`.
 
 ## Limits and policy
 
@@ -103,7 +140,7 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 }
 
-export function homepage(base: string, maxWatches: number): string {
+export function homepage(base: string, info: SiteInfo): string {
   const b = esc(base);
   return `<!doctype html>
 <html lang="en">
@@ -172,15 +209,18 @@ curl -s ${b}/v1/changes -H "Authorization: Bearer $TOKEN"</pre>
 
   <h2>What it understands</h2>
   <ul>
-    <li><strong>Any public page</strong>: HTML is normalized (scripts, styles, markup and timestamp noise removed) before comparison. Optional CSS selector and keyword filters.</li>
-    <li><strong>Job boards</strong>: Greenhouse and Lever via their public job-board APIs; other career pages via schema.org <code>JobPosting</code>.</li>
-    <li><strong>Event pages</strong>: schema.org <code>Event</code> JSON-LD, falling back to calendar dates in the page text.</li>
+    <li><strong>Any public page</strong>: only the main content is compared; navigation, cookie banners, scripts and markup are dropped, and lines that change on nearly every load (counters, clocks, rotating widgets) are learned and ignored. Changes come with word-level diffs. Optional CSS selector and keyword filters.</li>
+    <li><strong>Feeds</strong>: RSS and Atom report each new entry as <code>ITEM_ADDED</code>.</li>
+    <li><strong>Job boards</strong>: Greenhouse, Lever, Ashby, Workable, SmartRecruiters and Recruitee via their public job-board APIs; other career pages via schema.org <code>JobPosting</code>.</li>
+    <li><strong>Event pages</strong>: schema.org <code>Event</code> JSON-LD (including reschedules), falling back to future calendar dates in the page text.</li>
+    <li><strong>Delivery</strong>: poll <code>get_changes</code>, or add a signed <code>webhook_url</code>. ${info.conditions ? 'Natural-language <code>condition</code> filters (&ldquo;only if the price drops below $50&rdquo;) are available.' : ''}</li>
     <li>Shared fetching: many agents watching the same URL cost one request. ETag / Last-Modified are honored.</li>
   </ul>
 
   <h2>Limits and policy</h2>
   <ul>
-    <li>Free and anonymous. Up to ${maxWatches} watches per client; checks at most every 5 minutes.</li>
+    <li>Free and anonymous. Up to ${info.maxWatches} watches per client; checks at most every 5 minutes. Watches nobody reads for ${info.watchTtlDays} days expire.</li>
+    <li>Polite: at most one request at a time per website, spaced out, with ETag/Last-Modified.</li>
     <li>Public resources only. Watchtower respects robots.txt and does not bypass CAPTCHAs, logins, paywalls or anti-bot systems.</li>
     <li>Private and internal network addresses are refused.</li>
   </ul>

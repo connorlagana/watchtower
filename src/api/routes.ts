@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authenticate, bearerToken, createClient } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
-import { checkNow, createWatch, deleteWatch, getChanges, getWatch, listWatches } from '../services/watches.js';
+import { ackChanges, checkNow, createWatch, deleteWatch, getChanges, getWatch, listWatches } from '../services/watches.js';
 
 const createWatchBody = z.object({
   type: z.enum(['url', 'jobs', 'events']),
@@ -11,6 +11,13 @@ const createWatchBody = z.object({
   selector: z.string().max(300).optional(),
   interval_minutes: z.number().int().min(1).max(10080).optional(),
   label: z.string().max(200).optional(),
+  condition: z.string().min(3).max(500).optional(),
+  webhook_url: z.string().url().max(2048).optional(),
+});
+
+const ackBody = z.object({
+  cursor: z.number().int().min(0),
+  watch_id: z.string().uuid().optional(),
 });
 
 const changesQuery = z.object({
@@ -37,7 +44,7 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
 
   app.post(
     '/v1/clients',
-    { config: { rateLimit: { max: opts.clientCreationPerHour, timeWindow: '1 hour' } } },
+    { config: { limit: { name: 'client_creation', max: opts.clientCreationPerHour, windowSeconds: 3600 } } },
     async (_req, reply) => {
       const { client, token } = await createClient(ctx);
       reply.code(201);
@@ -66,12 +73,17 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
 
   app.post<{ Params: { id: string } }>(
     '/v1/watches/:id/check',
-    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    { config: { limit: { name: 'check_now', max: 10, windowSeconds: 60 } } },
     async (req) => checkNow(ctx, await auth(req), req.params.id),
   );
 
   app.get('/v1/changes', async (req) => {
     const q = parse(changesQuery, req.query);
     return getChanges(ctx, await auth(req), q);
+  });
+
+  app.post('/v1/changes/ack', async (req) => {
+    const body = parse(ackBody, req.body);
+    return ackChanges(ctx, await auth(req), body);
   });
 }

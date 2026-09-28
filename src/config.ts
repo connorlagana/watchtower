@@ -47,9 +47,29 @@ export interface Config {
   allowedPorts: number[];
   userAgent: string;
 
+  /** Space between two fetches to the same host (cluster-wide). */
+  hostMinSpacingMs: number;
+  /** Re-fetch once to separate real changes from content that differs on every load. */
+  confirmChanges: boolean;
+
+  /** Watches nobody has read for this long are deleted and stop costing fetches. */
+  watchTtlDays: number;
+  maxWatchesPerClientPerHost: number;
+  maxResourcesPerHost: number;
+  maxActiveResources: number;
+  changeRetentionDays: number;
+  snapshotRetentionDays: number;
+
   trustProxy: boolean;
   rateLimitPerMinute: number;
   clientCreationPerHour: number;
+
+  /** Optional: enables natural-language watch conditions. The service works fully without it. */
+  anthropicApiKey: string | null;
+  llmModel: string;
+  webhookTimeoutMs: number;
+  /** If set, GET /metrics requires "Authorization: Bearer <token>". */
+  metricsToken: string | null;
 }
 
 export function loadConfig(): Config {
@@ -82,8 +102,23 @@ export function loadConfig(): Config {
       .map(Number),
     userAgent: str('USER_AGENT', `WatchtowerBot/0.1 (+${publicBaseUrl}; monitoring for AI agents)`),
 
+    hostMinSpacingMs: int('HOST_MIN_SPACING_MS', 2000),
+    confirmChanges: bool('CONFIRM_CHANGES', true),
+
+    watchTtlDays: int('WATCH_TTL_DAYS', 30),
+    maxWatchesPerClientPerHost: int('MAX_WATCHES_PER_CLIENT_PER_HOST', 5),
+    maxResourcesPerHost: int('MAX_RESOURCES_PER_HOST', 100),
+    maxActiveResources: int('MAX_ACTIVE_RESOURCES', 50_000),
+    changeRetentionDays: int('CHANGE_RETENTION_DAYS', 30),
+    snapshotRetentionDays: int('SNAPSHOT_RETENTION_DAYS', 7),
+
     trustProxy: bool('TRUST_PROXY', false),
     rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
     clientCreationPerHour: int('CLIENT_CREATION_PER_HOUR', 10),
+
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
+    llmModel: str('LLM_MODEL', 'claude-opus-5'),
+    webhookTimeoutMs: int('WEBHOOK_TIMEOUT_MS', 10_000),
+    metricsToken: process.env.METRICS_TOKEN || null,
   };
 }

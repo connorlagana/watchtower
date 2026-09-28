@@ -1,4 +1,3 @@
-import rateLimit from '@fastify/rate-limit';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerApiRoutes } from './api/routes.js';
@@ -6,18 +5,28 @@ import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { buildMcpServer } from './mcp/server.js';
 import { bearerToken } from './services/clients.js';
+import { createConditionEvaluator, type ConditionEvaluator } from './services/conditions.js';
 import { AppError, type Ctx } from './services/context.js';
+import { renderMetrics } from './services/metrics.js';
+import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
 import { homepage, llmsTxt, wellKnown } from './web/site.js';
 
-export async function buildApp(config: Config, db: Db, opts: { logger?: boolean } = {}): Promise<{ app: FastifyInstance; ctx: Ctx }> {
+export interface BuildOptions {
+  logger?: boolean;
+  /** Override the condition evaluator (tests); defaults to Claude when ANTHROPIC_API_KEY is set. */
+  conditions?: ConditionEvaluator | null;
+}
+
+export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: Ctx }> {
   const app = Fastify({
     logger: opts.logger === false ? false : { level: config.logLevel },
     bodyLimit: 64 * 1024,
     trustProxy: config.trustProxy,
   });
-  const ctx: Ctx = { db, config, log: app.log };
+  const conditions = opts.conditions !== undefined ? opts.conditions : createConditionEvaluator(config);
+  const ctx: Ctx = { db, config, log: app.log, conditions };
 
-  await app.register(rateLimit, { max: config.rateLimitPerMinute, timeWindow: '1 minute' });
+  registerRateLimits(app, db, { name: 'global', max: config.rateLimitPerMinute, windowSeconds: 60 });
 
   app.addHook('onSend', async (_req, reply) => {
     reply.header('x-content-type-options', 'nosniff');
@@ -37,31 +46,29 @@ export async function buildApp(config: Config, db: Db, opts: { logger?: boolean 
 
   // --- site & metadata -----------------------------------------------------
   const base = config.publicBaseUrl;
-  app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homepage(base, config.maxWatchesPerClient)));
-  app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, config.maxWatchesPerClient)));
-  app.get('/.well-known/watchtower.json', async () => wellKnown(base, config.maxWatchesPerClient));
-  app.get('/health', { config: { rateLimit: false } }, async () => {
+  const site = { maxWatches: config.maxWatchesPerClient, watchTtlDays: config.watchTtlDays, conditions: conditions !== null };
+  app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homepage(base, site)));
+  app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
+  app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
+  app.get('/health', { config: { limit: false } }, async () => {
     await db.query('SELECT 1');
     return { ok: true };
+  });
+  app.get('/metrics', { config: { limit: false } }, async (req, reply) => {
+    if (config.metricsToken && req.headers.authorization !== `Bearer ${config.metricsToken}`) {
+      throw new AppError(401, 'UNAUTHORIZED', 'metrics require the METRICS_TOKEN bearer token');
+    }
+    return reply.type('text/plain; version=0.0.4').send(await renderMetrics(db));
   });
 
   // --- REST ------------------------------------------------------------------
   await registerApiRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour });
 
   // --- MCP (Streamable HTTP, stateless) ---------------------------------------
-  // Tokenless watch_* calls auto-create a client; hold them to the same per-IP
-  // budget as POST /v1/clients so MCP isn't a way around it.
-  const provisioned = new Map<string, { count: number; resetAt: number }>();
-  const allowProvision = (ip: string) => {
-    const now = Date.now();
-    let entry = provisioned.get(ip);
-    if (!entry || entry.resetAt < now) {
-      if (provisioned.size > 10_000) provisioned.clear();
-      entry = { count: 0, resetAt: now + 3_600_000 };
-      provisioned.set(ip, entry);
-    }
-    return ++entry.count <= config.clientCreationPerHour;
-  };
+  // Tokenless watch_* calls auto-create a client; they draw from the same shared
+  // per-address budget as POST /v1/clients so MCP isn't a way around it.
+  const allowProvision = async (ip: string) =>
+    (await hit(db, clientBucket(ip), { name: 'client_creation', max: config.clientCreationPerHour, windowSeconds: 3600 })).allowed;
 
   app.post('/mcp', async (req, reply) => {
     const server = buildMcpServer(ctx, { headerToken: bearerToken(req.headers.authorization), allowProvision: () => allowProvision(req.ip) });

@@ -190,3 +190,36 @@ export async function safeFetch(input: string, opts: FetchOptions): Promise<Fetc
     };
   }
 }
+
+/**
+ * POST a small JSON body (webhook delivery) under the same SSRF policy.
+ * Redirects are never followed: a webhook endpoint that redirects is a failure.
+ */
+export async function safePost(
+  input: string,
+  body: string,
+  opts: Pick<FetchOptions, 'policy' | 'timeoutMs' | 'userAgent'> & { headers?: Record<string, string> },
+): Promise<{ status: number }> {
+  let url: URL;
+  try {
+    url = validateUrl(input, opts.policy);
+  } catch (err) {
+    throw new FetchError('SSRF_BLOCKED', (err as Error).message);
+  }
+  try {
+    const res = await request(url, {
+      method: 'POST',
+      dispatcher: agentFor(opts.policy, opts.timeoutMs),
+      signal: AbortSignal.timeout(opts.timeoutMs),
+      headers: { 'user-agent': opts.userAgent, 'content-type': 'application/json', ...opts.headers },
+      body,
+    });
+    discard(res.body as unknown as Readable);
+    return { status: res.statusCode };
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    if (e instanceof SsrfError || e.code === 'SSRF_BLOCKED') throw new FetchError('SSRF_BLOCKED', e.message);
+    if (e.name === 'TimeoutError' || /timeout/i.test(e.code ?? '')) throw new FetchError('TIMEOUT', `timed out after ${opts.timeoutMs}ms`);
+    throw new FetchError('NETWORK_ERROR', e.message);
+  }
+}

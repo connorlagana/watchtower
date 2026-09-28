@@ -1,0 +1,43 @@
+# Example Prometheus alerting rules for Watchtower (scrape GET /metrics).
+groups:
+  - name: watchtower
+    rules:
+      - alert: WatchtowerBeingBlocked
+        # Sites answering 401/403/429 or bot challenges: we may be too aggressive, or an IP got flagged.
+        expr: watchtower_blocked_resources_1h > 10
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} resources were refused by their sites in the last hour"
+          description: "Check logs for 'host is refusing us' to see which hosts; consider raising HOST_MIN_SPACING_MS."
+
+      - alert: WatchtowerCheckErrorsHigh
+        expr: |
+          sum(rate(watchtower_checks_total{outcome="error"}[15m]))
+            / clamp_min(sum(rate(watchtower_checks_total[15m])), 1e-9) > 0.25
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 25% of resource checks are failing"
+
+      - alert: WatchtowerChecksStalled
+        # Watches exist but nothing is being checked: the scheduler is down or wedged.
+        expr: watchtower_active_resources > 0 and sum(increase(watchtower_checks_total[30m])) == 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "No resource checks in 30 minutes"
+
+      - alert: WatchtowerWebhookBacklog
+        expr: watchtower_webhooks_pending > 500
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} webhook deliveries pending"
+
+      - alert: WatchtowerSlowFetches
+        expr: histogram_quantile(0.95, sum(rate(watchtower_fetch_duration_seconds_bucket[15m])) by (le)) > 10
+        for: 30m
+        labels: { severity: info }
+        annotations:
+          summary: "p95 check duration above 10s"
