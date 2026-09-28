@@ -1,4 +1,4 @@
--- Abuse/cost controls, noise suppression, conditions, webhooks, retention.
+-- Abuse/cost controls, noise suppression, webhooks, retention.
 
 -- Per-host politeness and caps need the host as a column.
 ALTER TABLE resources ADD COLUMN host text;
@@ -18,19 +18,9 @@ CREATE TABLE host_leases (
 -- Watches expire when their owner stops reading them.
 ALTER TABLE watches ADD COLUMN last_accessed_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE watches ADD COLUMN delete_reason text;
--- Natural-language condition evaluated by the optional LLM.
-ALTER TABLE watches ADD COLUMN condition text;
 -- Optional push delivery.
 ALTER TABLE watches ADD COLUMN webhook_url text;
 ALTER TABLE watches ADD COLUMN webhook_secret text;
-
-CREATE TABLE watch_change_verdicts (
-  watch_id  uuid NOT NULL REFERENCES watches(id) ON DELETE CASCADE,
-  change_id bigint NOT NULL REFERENCES changes(id) ON DELETE CASCADE,
-  match     boolean NOT NULL,
-  reason    text,
-  PRIMARY KEY (watch_id, change_id)
-);
 
 CREATE TABLE webhook_deliveries (
   id              bigserial PRIMARY KEY,

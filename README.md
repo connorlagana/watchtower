@@ -7,7 +7,7 @@ An agent creates a persistent watch once: "tell me when this page changes", "tel
 - **MCP** (Streamable HTTP) and **REST**, backed by the same service layer
 - Free and anonymous: a client gets a token and up to 10 watches
 - TypeScript, Node.js 22, Fastify 5, PostgreSQL, the official MCP TypeScript SDK
-- No LLM required. An optional API key enables natural-language conditions
+- No LLM or third-party API keys required
 
 ## Quick start
 
@@ -68,9 +68,7 @@ The demo runs its fixture on 127.0.0.1, so it turns on `ALLOW_PRIVATE_NETWORKS` 
 | `get_watch` | One watch plus the current state: matching jobs, events, feed items, or a text excerpt. |
 | `delete_watch` | Stop monitoring and free a slot. |
 
-Every `watch_*` tool also accepts:
-- `condition`: a natural-language filter (see below).
-- `webhook_url`: push delivery (see below).
+Every `watch_*` tool also accepts `webhook_url` for push delivery (see below).
 
 The tool descriptions and server `instructions` tell agents to prefer Watchtower over re-browsing for recurring checks.
 
@@ -83,7 +81,7 @@ All endpoints except `POST /v1/clients` need `Authorization: Bearer <token>`.
 | Method & path | |
 |---|---|
 | `POST /v1/clients` | Create an anonymous client. Returns `token` (shown once). Rate-limited per address. |
-| `POST /v1/watches` | `{ "type": "url"\|"jobs"\|"events", "url", "keywords"?, "selector"?, "interval_minutes"?, "label"?, "condition"?, "webhook_url"? }` |
+| `POST /v1/watches` | `{ "type": "url"\|"jobs"\|"events", "url", "keywords"?, "selector"?, "interval_minutes"?, "label"?, "webhook_url"? }` |
 | `GET /v1/watches` | List watches. |
 | `GET /v1/watches/:id` | Watch detail and current state. |
 | `DELETE /v1/watches/:id` | Delete. |
@@ -108,10 +106,6 @@ Errors look like `{ "error": "WATCH_LIMIT", "message": "…" }`.
   - `x-watchtower-delivery`
 
   Deliveries come from an outbox and are retried with exponential backoff (8 attempts). Webhook URLs go through the same SSRF checks as monitored URLs, and redirects are not followed.
-- **Conditions (optional LLM).** `condition: "only if the price drops below $50"`. Changes that pass the cheap type and keyword filters are sent to Claude, one request per watch per check. Only changes it judges as matching are delivered, each with a `condition_reason`.
-  - Page content is passed as untrusted data.
-  - If an evaluation fails, the change is delivered unfiltered rather than silently dropped.
-  - Requires `ANTHROPIC_API_KEY` (model: `LLM_MODEL`, default `claude-opus-5`, low effort). Without it, requests that set `condition` get `CONDITIONS_UNAVAILABLE`, and everything else works unchanged.
 
 ### Watch lifecycle
 
@@ -127,8 +121,8 @@ A watch stays alive as long as someone uses it: `get_changes`, `get_watch`, `lis
                                             │  diff vs previous snapshot, minus learned noise
                                             │  change? fetch again, keep only what both fetches agree on
                                             ▼
-             snapshot + typed change events (+ LLM verdicts for conditional watches), one transaction
-                                            │  read through each watch's type / keyword / condition filter
+                     snapshot + typed change events, one transaction
+                                            │  read through each watch's type / keyword filter
                                             ▼
                       get_changes (per-watch cursor)   ·   webhook outbox → signed POST
 ```
@@ -137,7 +131,6 @@ A watch stays alive as long as someone uses it: `get_changes`, `get_watch`, `lis
 - **Change events are written once per resource.** Each watch reads them through its own filter:
   - `change_types` comes from the watch kind.
   - `keywords` does a case-insensitive match against the change's search text.
-  - `condition` requires a positive LLM verdict.
 
   A watch never sees changes from before it was created. Change ids double as cursors, so change-writing transactions are serialized. That keeps ids visible in order, so a slow concurrent check can't commit an id that a reader has already moved past.
 - **Politeness.** At most one fetch is in flight per website across all replicas, using a Postgres host lease with `HOST_MIN_SPACING_MS` between requests. Each scheduler tick claims at most one resource per host. Watchtower also:
@@ -188,7 +181,7 @@ A watch stays alive as long as someone uses it: `get_changes`, `get_watch`, `lis
 - fetch-duration histogram;
 - changes emitted by type;
 - suppressed noise lines;
-- webhook and LLM results;
+- webhook results;
 - host-busy deferrals;
 - gauges for active watches/resources, failing and blocked resources, and pending webhooks.
 
@@ -202,7 +195,6 @@ See [.env.example](.env.example). The most important settings:
 - The caps: `MAX_WATCHES_PER_CLIENT`, `MAX_RESOURCES_PER_HOST` and `MAX_ACTIVE_RESOURCES`.
 - `WATCH_TTL_DAYS` and the retention settings.
 - `TRUST_PROXY`: set it behind a load balancer so rate limits see real client IPs.
-- `ANTHROPIC_API_KEY` (optional) enables conditions.
 - `ALLOW_PRIVATE_NETWORKS` turns SSRF protection off and exists only for tests and the demo.
 
 ## Development
@@ -213,12 +205,12 @@ npm test                                  # unit tests; integration tests need a
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/watchtower_test npm test
 ```
 
-The integration suite drops and recreates the `public` schema of `TEST_DATABASE_URL`, so point it at a throwaway database. It stubs the LLM, so no API key is needed.
+The integration suite drops and recreates the `public` schema of `TEST_DATABASE_URL`, so point it at a throwaway database.
 
 The suite has three parts:
 - Unit tests.
 - Property-based fuzz tests (fast-check) over the HTML, JSON-LD, feed, robots and date parsers and the diff invariants.
-- Integration tests covering REST, MCP, sharing, noise suppression, host leases, concurrent checks, caps, expiry and retention, webhooks, conditions, rate limits and metrics.
+- Integration tests covering REST, MCP, sharing, noise suppression, host leases, concurrent checks, caps, expiry and retention, webhooks, rate limits and metrics.
 
 CI (`.github/workflows/watchtower.yml`) runs typecheck, all tests against a Postgres service, the build and the demo. It also builds the Docker image and smoke-tests it: migrations, `/health`, `/metrics`, the homepage, and the non-root user.
 
@@ -231,7 +223,7 @@ src/
   extract/                  main-content HTML normalization, JSON-LD, feeds, date fallback, job-board adapters,
                             volatility learning, diff (word diffs, pairing)
   services/                 clients, watches, checker, scheduler (+ maintenance), host leases, rate limits,
-                            webhooks, conditions (optional LLM), metrics
+                            webhooks, metrics
   mcp/server.ts             MCP tools
   web/site.ts               homepage, llms.txt, well-known metadata
 migrations/                 SQL migrations

@@ -64,9 +64,6 @@ export interface Config {
   rateLimitPerMinute: number;
   clientCreationPerHour: number;
 
-  /** Optional: enables natural-language watch conditions. The service works fully without it. */
-  anthropicApiKey: string | null;
-  llmModel: string;
   webhookTimeoutMs: number;
   /** If set, GET /metrics requires "Authorization: Bearer <token>". */
   metricsToken: string | null;
@@ -116,8 +113,6 @@ export function loadConfig(): Config {
     rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
     clientCreationPerHour: int('CLIENT_CREATION_PER_HOUR', 10),
 
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
-    llmModel: str('LLM_MODEL', 'claude-opus-5'),
     webhookTimeoutMs: int('WEBHOOK_TIMEOUT_MS', 10_000),
     metricsToken: process.env.METRICS_TOKEN || null,
   };

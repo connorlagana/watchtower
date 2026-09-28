@@ -8,8 +8,6 @@ export const TAGLINE = 'Stop repeatedly browsing the same pages. Watchtower moni
 export interface SiteInfo {
   maxWatches: number;
   watchTtlDays: number;
-  /** Whether natural-language conditions are available on this instance. */
-  conditions: boolean;
 }
 
 export const CHANGE_TYPES = [
@@ -46,7 +44,6 @@ export function wellKnown(base: string, info: SiteInfo) {
     auth: { type: 'bearer', obtain: { method: 'POST', url: `${base}/v1/clients` }, header: 'Authorization: Bearer <token>' },
     limits: { max_watches_per_client: info.maxWatches, min_check_interval_minutes: 5, watch_expires_after_unread_days: info.watchTtlDays },
     features: {
-      natural_language_conditions: info.conditions,
       webhooks: { signature: 'x-watchtower-signature: sha256=HMAC_SHA256(secret, "<x-watchtower-timestamp>.<body>")' },
       at_least_once: 'get_changes(peek=true) then ack_changes(cursor)',
     },
@@ -55,7 +52,7 @@ export function wellKnown(base: string, info: SiteInfo) {
       base_url: `${base}/v1`,
       endpoints: [
         'POST /v1/clients',
-        'POST /v1/watches  {type: url|jobs|events, url, keywords?, selector?, interval_minutes?, label?, condition?, webhook_url?}',
+        'POST /v1/watches  {type: url|jobs|events, url, keywords?, selector?, interval_minutes?, label?, webhook_url?}',
         'GET /v1/watches',
         'GET /v1/watches/{id}',
         'DELETE /v1/watches/{id}',
@@ -124,7 +121,6 @@ and neighbouring context lines). Lines that change on nearly every load (counter
 ## Filters and delivery
 
 - \`keywords\`: only changes mentioning one of them.
-- \`condition\`: natural-language filter evaluated by an LLM (${info.conditions ? 'available on this instance' : 'not configured on this instance'}).
 - \`webhook_url\`: signed POST on every matching change (\`x-watchtower-signature: sha256=HMAC(secret, "<timestamp>.<body>")\`).
 - At-least-once: \`get_changes(peek=true)\`, process, then \`ack_changes(cursor)\`.
 
@@ -213,7 +209,7 @@ curl -s ${b}/v1/changes -H "Authorization: Bearer $TOKEN"</pre>
     <li><strong>Feeds</strong>: RSS and Atom report each new entry as <code>ITEM_ADDED</code>.</li>
     <li><strong>Job boards</strong>: Greenhouse, Lever, Ashby, Workable, SmartRecruiters and Recruitee via their public job-board APIs; other career pages via schema.org <code>JobPosting</code>.</li>
     <li><strong>Event pages</strong>: schema.org <code>Event</code> JSON-LD (including reschedules), falling back to future calendar dates in the page text.</li>
-    <li><strong>Delivery</strong>: poll <code>get_changes</code>, or add a signed <code>webhook_url</code>. ${info.conditions ? 'Natural-language <code>condition</code> filters (&ldquo;only if the price drops below $50&rdquo;) are available.' : ''}</li>
+    <li><strong>Delivery</strong>: poll <code>get_changes</code>, or add a signed <code>webhook_url</code>.</li>
     <li>Shared fetching: many agents watching the same URL cost one request. ETag / Last-Modified are honored.</li>
   </ul>
 

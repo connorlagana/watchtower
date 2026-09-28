@@ -30,15 +30,6 @@ const intervalArg = z
   .optional()
   .describe('How often to check, in minutes (min 5, default 60). Resources shared with other watchers use the shortest interval.');
 const labelArg = z.string().max(200).optional().describe('A short note to yourself about why you are watching this.');
-const conditionArg = z
-  .string()
-  .min(3)
-  .max(500)
-  .optional()
-  .describe(
-    'Optional natural-language filter, e.g. "only if the price drops below $50" or "senior roles only". Evaluated by an LLM on each ' +
-      'detected change; only matching changes are delivered. Returns CONDITIONS_UNAVAILABLE on instances without an LLM configured; use keywords there.',
-  );
 const webhookArg = z
   .string()
   .url()
@@ -86,7 +77,6 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
         keywords: args.keywords as string[] | undefined,
         selector: args.selector as string | undefined,
         interval_minutes: args.interval_minutes as number | undefined,
-        condition: args.condition as string | undefined,
         webhook_url: args.webhook_url as string | undefined,
       });
       return ok(
@@ -114,7 +104,6 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
         url: z.string().url().describe('Public http(s) URL to monitor.'),
         keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report changes whose added/removed text contains one of these (case-insensitive).'),
         selector: z.string().max(300).optional().describe('CSS selector restricting which part of the page is compared, e.g. "main" or "#pricing".'),
-        condition: conditionArg,
         webhook_url: webhookArg,
         interval_minutes: intervalArg,
         label: labelArg,
@@ -137,7 +126,6 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
       inputSchema: {
         url: z.string().url().describe('Job board or careers page URL, e.g. https://boards.greenhouse.io/acme or https://jobs.lever.co/acme'),
         keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs whose title/location/department contains one of these, e.g. ["iOS", "Swift"].'),
-        condition: conditionArg,
         webhook_url: webhookArg,
         interval_minutes: intervalArg,
         label: labelArg,
@@ -159,7 +147,6 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
       inputSchema: {
         url: z.string().url().describe('Public event, venue, tour or schedule page URL.'),
         keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report events whose name/date/location contains one of these, e.g. ["Berlin"].'),
-        condition: conditionArg,
         webhook_url: webhookArg,
         interval_minutes: intervalArg,
         label: labelArg,

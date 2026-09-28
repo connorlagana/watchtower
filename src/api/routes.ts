@@ -11,7 +11,6 @@ const createWatchBody = z.object({
   selector: z.string().max(300).optional(),
   interval_minutes: z.number().int().min(1).max(10080).optional(),
   label: z.string().max(200).optional(),
-  condition: z.string().min(3).max(500).optional(),
   webhook_url: z.string().url().max(2048).optional(),
 });
 

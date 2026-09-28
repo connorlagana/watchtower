@@ -62,7 +62,6 @@ export const metrics = {
   changes: new Counter('watchtower_changes_emitted_total', 'Change events written, by type.'),
   suppressed: new Counter('watchtower_volatile_lines_suppressed_total', 'Changed lines suppressed as volatile noise.'),
   webhooks: new Counter('watchtower_webhook_deliveries_total', 'Webhook delivery attempts by result.'),
-  llm: new Counter('watchtower_llm_evaluations_total', 'Condition evaluations by result.'),
   hostBusy: new Counter('watchtower_host_busy_total', 'Checks deferred because another fetch to the same host was in flight.'),
 };
 

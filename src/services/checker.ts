@@ -1,11 +1,11 @@
 /**
  * Check one resource: take the host's politeness lease, fetch, extract, diff
  * against the previous snapshot with learned noise suppression, confirm real
- * changes with a second fetch, evaluate LLM conditions, and persist the new
- * snapshot, change events and verdicts atomically.
+ * changes with a second fetch, and persist the new snapshot and change
+ * events atomically.
  */
 import { extract } from '../extract/adapters.js';
-import { computeChanges, diffLines, hashes, type ChangeDraft } from '../extract/diff.js';
+import { computeChanges, diffLines, hashes } from '../extract/diff.js';
 import { API_ADAPTERS, type AdapterName, type Extraction } from '../extract/types.js';
 import { isVolatile, lineSignature, normalizeStats, recordObservation, type LineStats } from '../extract/volatility.js';
 import { robotsAllows } from '../fetch/robots.js';
@@ -169,31 +169,6 @@ function stabilize(a: Extraction, b: Extraction): { stable: Extraction; flakyLin
   };
 }
 
-function matchesKeywords(searchText: string, keywords: string[]): boolean {
-  return keywords.length === 0 || keywords.some((k) => searchText.includes(k));
-}
-
-/** Evaluate LLM conditions for every conditional watch on this resource. Fail open: if evaluation fails, deliver. */
-async function evaluateConditions(ctx: Ctx, resourceId: string, changes: ChangeDraft[]) {
-  const verdicts: { watchId: string; index: number; match: boolean; reason: string }[] = [];
-  const { rows: watches } = await ctx.db.query<{ id: string; condition: string; change_types: string[]; keywords: string[] }>(
-    'SELECT id, condition, change_types, keywords FROM watches WHERE resource_id = $1 AND deleted_at IS NULL AND condition IS NOT NULL',
-    [resourceId],
-  );
-  for (const w of watches) {
-    const candidates = changes
-      .map((c, index) => ({ c, index }))
-      .filter(({ c }) => w.change_types.includes(c.type) && matchesKeywords(c.search_text, w.keywords));
-    if (candidates.length === 0) continue;
-    const result = ctx.conditions ? await ctx.conditions.evaluate(w.condition, candidates.map(({ c }) => c)) : null;
-    candidates.forEach(({ index }, i) => {
-      const v = result?.[i] ?? { match: true, reason: 'condition could not be evaluated; delivered unfiltered' };
-      verdicts.push({ watchId: w.id, index, match: v.match, reason: v.reason });
-    });
-  }
-  return verdicts;
-}
-
 async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
   const interval = await effectiveInterval(ctx, r.id);
   const opts = fetchOptions(ctx.config);
@@ -288,7 +263,6 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
       return { ok: true, changed: false, changes: 0, notModified: false, firstSnapshot: false, suppressedLines: diff.suppressedLines };
     }
 
-    const verdicts = before ? await evaluateConditions(ctx, r.id, diff.changes) : [];
     const { textHash, contentHash } = hashes(current);
     const client = await ctx.db.connect();
     let changeIds: number[] = [];
@@ -327,14 +301,6 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
           [r.id, snapshotId, c.type, c.item_key, c.summary, JSON.stringify(c.data), c.search_text],
         );
         changeIds.push(ins.rows[0]!.id);
-      }
-      for (const v of verdicts) {
-        await client.query('INSERT INTO watch_change_verdicts (watch_id, change_id, match, reason) VALUES ($1, $2, $3, $4)', [
-          v.watchId,
-          changeIds[v.index],
-          v.match,
-          v.reason.slice(0, 500),
-        ]);
       }
       await client.query(
         `UPDATE resources SET last_checked_at = now(), last_status = $2, etag = $3, last_modified = $4, last_error = NULL,

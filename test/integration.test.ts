@@ -13,7 +13,6 @@ import { loadConfig } from '../src/config.js';
 import { createPool, migrate, type Db } from '../src/db.js';
 import { createHmac } from 'node:crypto';
 import { checkResource } from '../src/services/checker.js';
-import type { ConditionEvaluator } from '../src/services/conditions.js';
 import type { Ctx } from '../src/services/context.js';
 import { releaseHost, tryAcquireHost } from '../src/services/hostLease.js';
 import { hit } from '../src/services/rateLimit.js';
@@ -90,14 +89,6 @@ const fixture = http.createServer((req, res) => {
   res.writeHead(404, { 'content-type': 'text/plain' }).end('nope');
 });
 
-/** Deterministic stand-in for the LLM: a change matches if its summary contains the condition's quoted word. */
-const stubConditions: ConditionEvaluator = {
-  async evaluate(condition, changes) {
-    const word = /"([^"]+)"/.exec(condition)?.[1]?.toLowerCase() ?? '';
-    return changes.map((c) => ({ match: c.summary.toLowerCase().includes(word), reason: `stub: looked for "${word}"` }));
-  },
-};
-
 let app: FastifyInstance;
 let ctx: Ctx;
 let db: Db;
@@ -137,7 +128,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     db = createPool(DATABASE_URL!);
     await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
     await migrate(db);
-    ({ app, ctx } = await buildApp(config, db, { logger: false, conditions: stubConditions }));
+    ({ app, ctx } = await buildApp(config, db, { logger: false }));
     await app.listen({ port: 0, host: '127.0.0.1' });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   });
@@ -159,7 +150,6 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(home.body).toContain('Stop repeatedly browsing the same pages.');
     const wk = await api('GET', '/.well-known/watchtower.json');
     expect(wk.body.mcp.tools).toEqual(['watch_url', 'watch_jobs', 'watch_events', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
-    expect(wk.body.features.natural_language_conditions).toBe(true);
     const llms = await app.inject({ url: '/llms.txt' });
     expect(llms.body).toMatch(/prefer Watchtower over repeated browsing/i);
   });
@@ -484,30 +474,6 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
       expect(res.body.error).toBe('WEBHOOK_URL_NOT_ALLOWED');
     } finally {
       ctx.config.allowPrivateNetworks = true;
-    }
-  });
-
-  // ------------------------------------------------------------------ conditions
-  it('filters changes through natural-language conditions (LLM stubbed)', async () => {
-    site.jobs = [{ id: 'x', title: 'Backend Engineer', location: 'Berlin' }];
-    const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'jobs', url: `${origin}/careers`, condition: 'only "senior" roles' });
-    expect(w.body.condition).toBe('only "senior" roles');
-    site.jobs.push({ id: 'y', title: 'Senior iOS Engineer', location: 'Remote' }, { id: 'z', title: 'Junior iOS Engineer', location: 'Remote' });
-    await check(t, w.body.id);
-    const { body } = await api('GET', '/v1/changes', t);
-    expect(body.changes.map((c: any) => c.data.job.title)).toEqual(['Senior iOS Engineer']);
-    expect(body.changes[0].condition_reason).toBe('stub: looked for "senior"');
-  });
-
-  it('refuses conditions when no LLM is configured', async () => {
-    const saved = ctx.conditions;
-    ctx.conditions = null;
-    try {
-      const res = await api('POST', '/v1/watches', await newToken(), { type: 'url', url: `${origin}/page`, condition: 'only price drops' });
-      expect(res.body.error).toBe('CONDITIONS_UNAVAILABLE');
-    } finally {
-      ctx.conditions = saved;
     }
   });
 

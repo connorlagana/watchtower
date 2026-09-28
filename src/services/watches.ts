@@ -16,8 +16,6 @@ export interface CreateWatchInput {
   keywords?: string[];
   selector?: string;
   interval_minutes?: number;
-  /** Natural-language filter, evaluated by the optional LLM. */
-  condition?: string;
   /** Where to POST matching changes (optional; polling get_changes always works). */
   webhook_url?: string;
 }
@@ -36,7 +34,6 @@ interface WatchRow {
   cursor: number;
   created_at: Date;
   last_accessed_at: Date;
-  condition: string | null;
   webhook_url: string | null;
 }
 
@@ -58,7 +55,6 @@ type JoinedRow = WatchRow & {
 };
 
 const MAX_KEYWORDS = 20;
-const MAX_CONDITION_CHARS = 500;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function matchesKeywords(text: string, keywords: string[]): boolean {
@@ -80,7 +76,6 @@ function presentWatch(ctx: Ctx, row: JoinedRow, opts: { includeCurrent: boolean 
     url: row.source_url,
     label: row.label,
     keywords: row.keywords,
-    condition: row.condition,
     webhook_url: row.webhook_url,
     change_types: row.change_types,
     interval_minutes: Math.round(row.interval_seconds / 60),
@@ -160,14 +155,6 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
   const parsed = await validatePublicUrl(ctx, input.url, 'URL_NOT_ALLOWED');
   const webhookUrl = input.webhook_url ? (await validatePublicUrl(ctx, input.webhook_url, 'WEBHOOK_URL_NOT_ALLOWED')).toString() : null;
 
-  const condition = input.condition?.trim() || null;
-  if (condition) {
-    if (!ctx.conditions) {
-      throw new AppError(400, 'CONDITIONS_UNAVAILABLE', 'natural-language conditions need an LLM, which this Watchtower instance does not have configured; use keywords instead');
-    }
-    if (condition.length > MAX_CONDITION_CHARS) throw new AppError(400, 'VALIDATION_ERROR', `condition must be at most ${MAX_CONDITION_CHARS} characters`);
-  }
-
   const source = resolveSource(parsed.toString(), input.kind);
   const host = hostOf(source.fetchUrl);
   const keywords = [...new Set((input.keywords ?? []).map((k) => k.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_KEYWORDS);
@@ -231,8 +218,8 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
     const baseline = maxRows[0]?.m ?? 0;
     const { rows } = await db.query<{ id: string }>(
       `INSERT INTO watches (client_id, resource_id, kind, source_url, label, keywords, change_types, interval_seconds, baseline, cursor,
-                            condition, webhook_url, webhook_secret)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12) RETURNING id`,
+                            webhook_url, webhook_secret)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11) RETURNING id`,
       [
         client.id,
         resource.id,
@@ -243,7 +230,6 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
         CHANGE_TYPES_BY_KIND[input.kind],
         intervalSeconds,
         baseline,
-        condition,
         webhookUrl,
         webhookSecret,
       ],
@@ -358,7 +344,6 @@ interface ChangeRow {
   label: string | null;
   kind: string;
   source_url: string;
-  condition_reason: string | null;
 }
 
 export async function getChanges(ctx: Ctx, client: Client, input: GetChangesInput) {
@@ -370,8 +355,7 @@ export async function getChanges(ctx: Ctx, client: Client, input: GetChangesInpu
   const since = input.since ?? null;
 
   const { rows } = await ctx.db.query<ChangeRow>(
-    `SELECT c.id, c.type, c.summary, c.data, c.detected_at, w.id AS watch_id, w.label, w.kind, w.source_url,
-            (SELECT v.reason FROM watch_change_verdicts v WHERE v.watch_id = w.id AND v.change_id = c.id) AS condition_reason
+    `SELECT c.id, c.type, c.summary, c.data, c.detected_at, w.id AS watch_id, w.label, w.kind, w.source_url
        FROM watches w
        JOIN changes c ON c.resource_id = w.resource_id
       WHERE w.client_id = $1 AND w.deleted_at IS NULL
@@ -409,7 +393,6 @@ export async function getChanges(ctx: Ctx, client: Client, input: GetChangesInpu
       summary: r.summary,
       detected_at: r.detected_at,
       data: r.data,
-      ...(r.condition_reason ? { condition_reason: r.condition_reason } : {}),
     })),
     cursor,
     has_more: hasMore,

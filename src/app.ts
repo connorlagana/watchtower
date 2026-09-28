@@ -5,7 +5,6 @@ import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { buildMcpServer } from './mcp/server.js';
 import { bearerToken } from './services/clients.js';
-import { createConditionEvaluator, type ConditionEvaluator } from './services/conditions.js';
 import { AppError, type Ctx } from './services/context.js';
 import { renderMetrics } from './services/metrics.js';
 import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
@@ -13,8 +12,6 @@ import { homepage, llmsTxt, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
   logger?: boolean;
-  /** Override the condition evaluator (tests); defaults to Claude when ANTHROPIC_API_KEY is set. */
-  conditions?: ConditionEvaluator | null;
 }
 
 export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: Ctx }> {
@@ -23,8 +20,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
     bodyLimit: 64 * 1024,
     trustProxy: config.trustProxy,
   });
-  const conditions = opts.conditions !== undefined ? opts.conditions : createConditionEvaluator(config);
-  const ctx: Ctx = { db, config, log: app.log, conditions };
+  const ctx: Ctx = { db, config, log: app.log };
 
   registerRateLimits(app, db, { name: 'global', max: config.rateLimitPerMinute, windowSeconds: 60 });
 
@@ -46,7 +42,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
 
   // --- site & metadata -----------------------------------------------------
   const base = config.publicBaseUrl;
-  const site = { maxWatches: config.maxWatchesPerClient, watchTtlDays: config.watchTtlDays, conditions: conditions !== null };
+  const site = { maxWatches: config.maxWatchesPerClient, watchTtlDays: config.watchTtlDays };
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homepage(base, site)));
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
   app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
