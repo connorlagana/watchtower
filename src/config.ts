@@ -1,0 +1,89 @@
+/**
+ * Runtime configuration, read once from the environment.
+ * Every knob has a production-safe default; see .env.example.
+ */
+
+function int(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a number, got "${raw}"`);
+  return Math.trunc(n);
+}
+
+function bool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+}
+
+function str(name: string, fallback: string): string {
+  const raw = process.env[name];
+  return raw === undefined || raw === '' ? fallback : raw;
+}
+
+export interface Config {
+  port: number;
+  host: string;
+  databaseUrl: string;
+  publicBaseUrl: string;
+  logLevel: string;
+  migrateOnStart: boolean;
+  runScheduler: boolean;
+
+  maxWatchesPerClient: number;
+  /** Floor for how often a single resource may be fetched. */
+  minCheckIntervalSeconds: number;
+  defaultCheckIntervalSeconds: number;
+  schedulerTickMs: number;
+  schedulerConcurrency: number;
+
+  fetchTimeoutMs: number;
+  maxBodyBytes: number;
+  maxRedirects: number;
+  /** DANGEROUS: lets the fetcher reach private/loopback addresses. Tests and the local demo only. */
+  allowPrivateNetworks: boolean;
+  /** Ports the fetcher may connect to. Empty = any port (only sensible with allowPrivateNetworks). */
+  allowedPorts: number[];
+  userAgent: string;
+
+  trustProxy: boolean;
+  rateLimitPerMinute: number;
+  clientCreationPerHour: number;
+}
+
+export function loadConfig(): Config {
+  const publicBaseUrl = str('PUBLIC_BASE_URL', 'http://localhost:3000').replace(/\/+$/, '');
+  const allowPrivateNetworks = bool('ALLOW_PRIVATE_NETWORKS', false);
+  const portsRaw = str('ALLOWED_PORTS', allowPrivateNetworks ? '' : '80,443');
+  return {
+    port: int('PORT', 3000),
+    host: str('HOST', '0.0.0.0'),
+    databaseUrl: str('DATABASE_URL', 'postgres://postgres:postgres@localhost:5432/watchtower'),
+    publicBaseUrl,
+    logLevel: str('LOG_LEVEL', 'info'),
+    migrateOnStart: bool('MIGRATE_ON_START', true),
+    runScheduler: bool('RUN_SCHEDULER', true),
+
+    maxWatchesPerClient: int('MAX_WATCHES_PER_CLIENT', 10),
+    minCheckIntervalSeconds: int('MIN_CHECK_INTERVAL_SECONDS', 300),
+    defaultCheckIntervalSeconds: int('DEFAULT_CHECK_INTERVAL_SECONDS', 3600),
+    schedulerTickMs: int('SCHEDULER_TICK_MS', 5000),
+    schedulerConcurrency: int('SCHEDULER_CONCURRENCY', 4),
+
+    fetchTimeoutMs: int('FETCH_TIMEOUT_MS', 15_000),
+    maxBodyBytes: int('MAX_BODY_BYTES', 3 * 1024 * 1024),
+    maxRedirects: int('MAX_REDIRECTS', 5),
+    allowPrivateNetworks,
+    allowedPorts: portsRaw
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map(Number),
+    userAgent: str('USER_AGENT', `WatchtowerBot/0.1 (+${publicBaseUrl}; monitoring for AI agents)`),
+
+    trustProxy: bool('TRUST_PROXY', false),
+    rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
+    clientCreationPerHour: int('CLIENT_CREATION_PER_HOUR', 10),
+  };
+}

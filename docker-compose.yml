@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: watchtower
+      POSTGRES_PASSWORD: watchtower
+      POSTGRES_DB: watchtower
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U watchtower"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://watchtower:watchtower@db:5432/watchtower
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # One-shot end-to-end demo: docker compose --profile demo run --rm demo
+  demo:
+    profiles: ["demo"]
+    build:
+      context: .
+      target: dev
+    command: ["npx", "tsx", "scripts/demo.ts"]
+    environment:
+      DATABASE_URL: postgres://watchtower:watchtower@db:5432/watchtower
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
