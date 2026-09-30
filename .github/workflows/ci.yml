@@ -69,7 +69,7 @@ jobs:
           for i in $(seq 1 30); do curl -fsS localhost:3000/health && break; sleep 1; done
           curl -fsS localhost:3000/health
           curl -fsS localhost:3000/metrics | grep -q watchtower_active_watches
-          curl -fsS localhost:3000/ | grep -q "Stop repeatedly browsing"
+          curl -fsS localhost:3000/ | grep -q "Job-board monitoring for AI agents"
           test "$(docker exec wt whoami)" = node
       - name: Container logs
         if: always()
