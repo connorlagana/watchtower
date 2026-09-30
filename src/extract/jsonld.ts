@@ -1,8 +1,7 @@
 /**
- * schema.org JSON-LD extraction for JobPosting and Event (and Event subtypes
- * such as MusicEvent, BusinessEvent, ...).
+ * schema.org JSON-LD extraction for JobPosting.
  */
-import type { EventItem, JobItem } from './types.js';
+import type { JobItem } from './types.js';
 
 type Node = Record<string, unknown>;
 
@@ -49,7 +48,7 @@ export function parseJsonLdBlocks(blocks: string[]): unknown[] {
   return out;
 }
 
-/** Walk arbitrary JSON-LD and yield every object node, including nested @graph / ItemList / subEvent. */
+/** Walk arbitrary JSON-LD and yield every object node, including nested @graph / ItemList. */
 function* walk(value: unknown, depth = 0): Generator<Node> {
   if (depth > 12 || value === null || typeof value !== 'object') return;
   if (Array.isArray(value)) {
@@ -58,7 +57,7 @@ function* walk(value: unknown, depth = 0): Generator<Node> {
   }
   const node = value as Node;
   yield node;
-  for (const key of ['@graph', 'itemListElement', 'item', 'subEvent', 'subEvents', 'event', 'events', 'mainEntity']) {
+  for (const key of ['@graph', 'itemListElement', 'item', 'mainEntity']) {
     if (key in node) yield* walk(node[key], depth + 1);
   }
 }
@@ -90,9 +89,8 @@ function placeText(v: unknown): string | undefined {
   return joined || undefined;
 }
 
-export function extractJsonLd(docs: unknown[], baseUrl?: string): { jobs: JobItem[]; events: EventItem[] } {
+export function extractJsonLd(docs: unknown[], baseUrl?: string): { jobs: JobItem[] } {
   const jobs = new Map<string, JobItem>();
-  const events = new Map<string, EventItem>();
   const abs = (u?: string) => {
     if (!u) return undefined;
     try {
@@ -104,43 +102,25 @@ export function extractJsonLd(docs: unknown[], baseUrl?: string): { jobs: JobIte
 
   for (const doc of docs) {
     for (const node of walk(doc)) {
-      const t = types(node);
-      if (t.includes('JobPosting')) {
-        const title = str(node.title) ?? str(node.name);
-        if (!title) continue;
-        const remote = String(node.jobLocationType ?? '').toUpperCase().includes('TELECOMMUTE');
-        const location = [placeText(node.jobLocation), remote ? 'Remote' : undefined].filter(Boolean).join(' / ') || undefined;
-        const url = abs(str(node.url));
-        const id = str(node.identifier);
-        const key = `job:${id ?? url ?? `${title}|${location ?? ''}`}`.toLowerCase();
-        jobs.set(key, {
-          key,
-          title,
-          location,
-          company: str(node.hiringOrganization),
-          department: str(node.occupationalCategory) ?? str(node.industry),
-          url,
-          posted_at: str(node.datePosted),
-          source: 'jsonld',
-        });
-      } else if (t.some((x) => x === 'Event' || x.endsWith('Event'))) {
-        const name = str(node.name);
-        if (!name) continue;
-        const start = str(node.startDate);
-        const url = abs(str(node.url));
-        const key = `event:${url ?? name}|${start ?? ''}`.toLowerCase();
-        events.set(key, {
-          key,
-          name,
-          start_date: start,
-          end_date: str(node.endDate),
-          location: placeText(node.location),
-          url,
-          status: str(node.eventStatus)?.replace(/^.*\//, ''),
-          source: 'jsonld',
-        });
-      }
+      if (!types(node).includes('JobPosting')) continue;
+      const title = str(node.title) ?? str(node.name);
+      if (!title) continue;
+      const remote = String(node.jobLocationType ?? '').toUpperCase().includes('TELECOMMUTE');
+      const location = [placeText(node.jobLocation), remote ? 'Remote' : undefined].filter(Boolean).join(' / ') || undefined;
+      const url = abs(str(node.url));
+      const id = str(node.identifier);
+      const key = `job:${id ?? url ?? `${title}|${location ?? ''}`}`.toLowerCase();
+      jobs.set(key, {
+        key,
+        title,
+        location,
+        company: str(node.hiringOrganization),
+        department: str(node.occupationalCategory) ?? str(node.industry),
+        url,
+        posted_at: str(node.datePosted),
+        source: 'jsonld',
+      });
     }
   }
-  return { jobs: [...jobs.values()], events: [...events.values()] };
+  return { jobs: [...jobs.values()] };
 }

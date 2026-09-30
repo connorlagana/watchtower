@@ -49,8 +49,6 @@ export interface Config {
 
   /** Space between two fetches to the same host (cluster-wide). */
   hostMinSpacingMs: number;
-  /** Re-fetch once to separate real changes from content that differs on every load. */
-  confirmChanges: boolean;
 
   /** Watches nobody has read for this long are deleted and stop costing fetches. */
   watchTtlDays: number;
@@ -82,7 +80,7 @@ export function loadConfig(): Config {
     migrateOnStart: bool('MIGRATE_ON_START', true),
     runScheduler: bool('RUN_SCHEDULER', true),
 
-    maxWatchesPerClient: int('MAX_WATCHES_PER_CLIENT', 10),
+    maxWatchesPerClient: int('MAX_WATCHES_PER_CLIENT', 50),
     minCheckIntervalSeconds: int('MIN_CHECK_INTERVAL_SECONDS', 300),
     defaultCheckIntervalSeconds: int('DEFAULT_CHECK_INTERVAL_SECONDS', 3600),
     schedulerTickMs: int('SCHEDULER_TICK_MS', 5000),
@@ -97,10 +95,9 @@ export function loadConfig(): Config {
       .map((p) => p.trim())
       .filter(Boolean)
       .map(Number),
-    userAgent: str('USER_AGENT', `WatchtowerBot/0.1 (+${publicBaseUrl}; monitoring for AI agents)`),
+    userAgent: str('USER_AGENT', `WatchtowerBot/0.1 (+${publicBaseUrl}; job-board monitoring for AI agents)`),
 
     hostMinSpacingMs: int('HOST_MIN_SPACING_MS', 2000),
-    confirmChanges: bool('CONFIRM_CHANGES', true),
 
     watchTtlDays: int('WATCH_TTL_DAYS', 30),
     maxWatchesPerClientPerHost: int('MAX_WATCHES_PER_CLIENT_PER_HOST', 5),

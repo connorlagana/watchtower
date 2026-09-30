@@ -1,13 +1,11 @@
 /**
- * Check one resource: take the host's politeness lease, fetch, extract, diff
- * against the previous snapshot with learned noise suppression, confirm real
- * changes with a second fetch, and persist the new snapshot and change
- * events atomically.
+ * Check one resource: take the host's politeness lease, fetch, extract the
+ * job list, diff it against the previous snapshot, and persist the new
+ * snapshot and change events atomically.
  */
-import { extract } from '../extract/adapters.js';
-import { computeChanges, diffLines, hashes } from '../extract/diff.js';
-import { API_ADAPTERS, type AdapterName, type Extraction } from '../extract/types.js';
-import { isVolatile, lineSignature, normalizeStats, recordObservation, type LineStats } from '../extract/volatility.js';
+import { collect, primaryRequestBody, requestsPerCheck } from '../extract/adapters.js';
+import { computeChanges, contentHash } from '../extract/diff.js';
+import type { AdapterName, Extraction, JobItem } from '../extract/types.js';
 import { robotsAllows } from '../fetch/robots.js';
 import { FetchError, safeFetch, type FetchResult } from '../fetch/safeFetch.js';
 import { fetchOptions, type Ctx } from './context.js';
@@ -30,11 +28,10 @@ export interface ResourceRow {
   last_error: string | null;
   consecutive_failures: number;
   next_check_at: Date;
-  line_stats: unknown;
 }
 
 export type CheckOutcome =
-  | { ok: true; changed: boolean; changes: number; notModified: boolean; firstSnapshot: boolean; suppressedLines: number }
+  | { ok: true; changed: boolean; changes: number; notModified: boolean; firstSnapshot: boolean; jobs: number | null }
   | { ok: false; errorCode: string; error: string; permanent: boolean };
 
 /** Errors that mean "we may not / cannot monitor this", as opposed to transient failures. */
@@ -63,6 +60,10 @@ export interface CheckOptions {
 
 const inFlight = new Map<string, Promise<CheckOutcome>>();
 
+/** Pause between follow-up requests to one source within a check (pagination); briefer than the between-check spacing. */
+const pageSpacingMs = (ctx: Ctx) => Math.min(ctx.config.hostMinSpacingMs, 750);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /** Deduplicates concurrent checks of the same resource within this process. */
 export function checkResource(ctx: Ctx, resourceId: string, opts: CheckOptions = {}): Promise<CheckOutcome> {
   let p = inFlight.get(resourceId);
@@ -89,15 +90,14 @@ function parseRetryAfter(v: string | undefined): number | undefined {
   return Number.isFinite(t) ? Math.max(0, (t - Date.now()) / 1000) : undefined;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 async function runCheck(ctx: Ctx, resourceId: string, opts: CheckOptions): Promise<CheckOutcome> {
   const { rows } = await ctx.db.query<ResourceRow>('SELECT * FROM resources WHERE id = $1', [resourceId]);
   const r = rows[0];
   if (!r) return { ok: false, errorCode: 'NOT_FOUND', error: 'resource not found', permanent: true };
 
-  // robots.txt + fetch + confirmation fetch, each bounded by the fetch timeout.
-  const leaseMs = ctx.config.fetchTimeoutMs * 3 + ctx.config.hostMinSpacingMs + 5000;
+  // robots.txt + every request of the check, each bounded by the fetch timeout.
+  const requests = requestsPerCheck(r.adapter);
+  const leaseMs = ctx.config.fetchTimeoutMs * (requests + 1) + pageSpacingMs(ctx) * requests + ctx.config.hostMinSpacingMs + 5000;
   const acquired = opts.waitForHost
     ? await acquireHostWaiting(ctx.db, r.host, leaseMs, Math.min(10_000, ctx.config.fetchTimeoutMs))
     : await tryAcquireHost(ctx.db, r.host, leaseMs);
@@ -134,45 +134,31 @@ function assertUsable(res: FetchResult): void {
   }
 }
 
-function extractOrFail(r: ResourceRow, res: FetchResult): Extraction {
+async function extractOrFail(ctx: Ctx, r: ResourceRow, res: FetchResult, opts: ReturnType<typeof fetchOptions>): Promise<Extraction> {
+  const more = async (url: string, jsonBody?: string) => {
+    await sleep(pageSpacingMs(ctx));
+    if (!(await robotsAllows(url, opts))) throw new CheckFailure('ROBOTS_DISALLOWED', `robots.txt disallows fetching ${url}`);
+    const page = await safeFetch(url, { ...opts, jsonBody });
+    assertUsable(page);
+    return page.body;
+  };
   try {
-    return extract(r.adapter, res.body, res.contentType, { baseUrl: res.finalUrl, selector: r.selector || undefined });
+    return await collect(r.adapter, r.url, res, more);
   } catch (err) {
+    if (err instanceof CheckFailure || err instanceof FetchError) throw err;
     throw new CheckFailure('PARSE_ERROR', `could not parse response: ${(err as Error).message}`);
   }
 }
 
-/** Keep only what two back-to-back fetches agree on. */
-function stabilize(a: Extraction, b: Extraction): { stable: Extraction; flakyLines: string[] } {
-  const { added, removed } = diffLines(a.text, b.text);
-  const inB = new Map<string, number>();
-  for (const l of b.text.split('\n')) inB.set(l, (inB.get(l) ?? 0) + 1);
-  const keptLines: string[] = [];
-  for (const l of a.text.split('\n')) {
-    const n = inB.get(l) ?? 0;
-    if (n > 0) {
-      keptLines.push(l);
-      inB.set(l, n - 1);
-    }
-  }
-  const keys = <T extends { key: string }>(list: T[] = []) => new Set(list.map((i) => i.key));
-  const [bj, be, bi] = [keys(b.jobs), keys(b.events), keys(b.items)];
-  return {
-    stable: {
-      ...a,
-      text: keptLines.join('\n'),
-      jobs: a.jobs.filter((j) => bj.has(j.key)),
-      events: a.events.filter((e) => be.has(e.key)),
-      items: a.items?.filter((i) => bi.has(i.key)),
-    },
-    flakyLines: [...added, ...removed],
-  };
+/** Keep details learned earlier for jobs the source now lists only partially (iCIMS sitemap-only entries). */
+function carryForward(current: Extraction, previous: JobItem[]): Extraction {
+  const known = new Map(previous.filter((j) => !j.partial).map((j) => [j.key, j]));
+  return { ...current, jobs: current.jobs.map((j) => (j.partial && known.has(j.key) ? known.get(j.key)! : j)) };
 }
 
 async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
   const interval = await effectiveInterval(ctx, r.id);
   const opts = fetchOptions(ctx.config);
-  let stats: LineStats = normalizeStats(r.line_stats);
 
   try {
     if (!(await robotsAllows(r.url, opts))) {
@@ -184,86 +170,44 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
       if (r.etag) conditional['if-none-match'] = r.etag;
       if (r.last_modified) conditional['if-modified-since'] = r.last_modified;
     }
-    const res = await safeFetch(r.url, { ...opts, headers: conditional });
+    const res = await safeFetch(r.url, { ...opts, headers: conditional, jsonBody: primaryRequestBody(r.adapter) });
 
     const markHealthy = async (status: number, extraSql = '', extraParams: unknown[] = []) => {
       await ctx.db.query(
         `UPDATE resources SET last_checked_at = now(), last_status = $2, etag = COALESCE($3, etag), last_modified = COALESCE($4, last_modified),
-           last_error = NULL, consecutive_failures = 0, next_check_at = now() + make_interval(secs => $5), line_stats = $6 ${extraSql}
+           last_error = NULL, consecutive_failures = 0, next_check_at = now() + make_interval(secs => $5) ${extraSql}
          WHERE id = $1`,
-        [r.id, status, res.headers.etag ?? null, res.headers['last-modified'] ?? null, interval, JSON.stringify(stats), ...extraParams],
+        [r.id, status, res.headers.etag ?? null, res.headers['last-modified'] ?? null, interval, ...extraParams],
       );
     };
 
     if (res.notModified) {
-      stats = recordObservation(stats, []);
       await markHealthy(304);
       metrics.checks.inc({ outcome: 'not_modified' });
-      return { ok: true, changed: false, changes: 0, notModified: true, firstSnapshot: false, suppressedLines: 0 };
+      return { ok: true, changed: false, changes: 0, notModified: true, firstSnapshot: false, jobs: null };
     }
     assertUsable(res);
 
-    const first = extractOrFail(r, res);
     const prevRow = r.current_snapshot_id
       ? (
-          await ctx.db.query<{ id: string; content_hash: string; title: string | null; text: string; structured: Partial<Extraction> }>(
-            'SELECT id, content_hash, title, text, structured FROM snapshots WHERE id = $1',
+          await ctx.db.query<{ id: string; content_hash: string; structured: { jobs?: JobItem[] } }>(
+            'SELECT id, content_hash, structured FROM snapshots WHERE id = $1',
             [r.current_snapshot_id],
           )
         ).rows[0]
       : undefined;
+    const current = carryForward(await extractOrFail(ctx, r, res, opts), prevRow?.structured.jobs ?? []);
+    const hash = contentHash(current);
 
-    if (prevRow && prevRow.content_hash === hashes(first).contentHash) {
-      stats = recordObservation(stats, []);
+    if (prevRow && prevRow.content_hash === hash) {
       await markHealthy(res.status);
       metrics.checks.inc({ outcome: 'unchanged' });
-      return { ok: true, changed: false, changes: 0, notModified: false, firstSnapshot: false, suppressedLines: 0 };
+      return { ok: true, changed: false, changes: 0, notModified: false, firstSnapshot: false, jobs: current.jobs.length };
     }
 
-    const before: Extraction | null = prevRow
-      ? {
-          title: prevRow.title,
-          text: prevRow.text,
-          jobs: prevRow.structured.jobs ?? [],
-          events: prevRow.structured.events ?? [],
-          items: prevRow.structured.items,
-          isFeed: prevRow.structured.isFeed,
-        }
-      : null;
-    const now = new Date();
-    let current = first;
-    let diff = computeChanges(before, first, { isNoise: (l) => isVolatile(stats, l), now });
-    let flakyLines: string[] = [];
+    const before: Extraction | null = prevRow ? { jobs: prevRow.structured.jobs ?? [] } : null;
+    const changes = computeChanges(before, current);
 
-    // A change on an HTML page might just be content that differs on every load (rotating
-    // widgets, A/B tests). Fetch once more and keep only what both fetches agree on.
-    if (before && diff.changes.length && ctx.config.confirmChanges && !API_ADAPTERS.has(r.adapter)) {
-      await sleep(ctx.config.hostMinSpacingMs);
-      try {
-        const res2 = await safeFetch(r.url, opts);
-        if (res2.status === 200) {
-          const { stable, flakyLines: flaky } = stabilize(first, extractOrFail(r, res2));
-          flakyLines = flaky;
-          // Match by shape: last time's "Trending: #812" is the same noise as this time's "Trending: #377".
-          const flakySigs = new Set(flaky.map(lineSignature));
-          current = stable;
-          diff = computeChanges(before, stable, { isNoise: (l) => flakySigs.has(lineSignature(l)) || isVolatile(stats, l), now });
-        }
-      } catch (err) {
-        ctx.log.warn({ resource: r.id, err: (err as Error).message }, 'confirmation fetch failed; using first fetch');
-      }
-    }
-    stats = recordObservation(stats, diff.changedLines, flakyLines);
-    metrics.suppressed.inc({}, diff.suppressedLines);
-
-    if (before && diff.changes.length === 0) {
-      // Only noise changed. Keep the previous snapshot as the baseline.
-      await markHealthy(res.status);
-      metrics.checks.inc({ outcome: 'unchanged' });
-      return { ok: true, changed: false, changes: 0, notModified: false, firstSnapshot: false, suppressedLines: diff.suppressedLines };
-    }
-
-    const { textHash, contentHash } = hashes(current);
     const client = await ctx.db.connect();
     let changeIds: number[] = [];
     try {
@@ -277,24 +221,15 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
       if ((locked.rows[0]?.current_snapshot_id ?? null) !== (prevRow?.id ?? null)) {
         await client.query('ROLLBACK');
         metrics.checks.inc({ outcome: 'raced' });
-        return { ok: true, changed: false, changes: 0, notModified: false, firstSnapshot: false, suppressedLines: 0 };
+        return { ok: true, changed: false, changes: 0, notModified: false, firstSnapshot: false, jobs: current.jobs.length };
       }
       const snap = await client.query<{ id: string }>(
-        `INSERT INTO snapshots (resource_id, status_code, content_type, content_hash, text_hash, title, text, structured)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-        [
-          r.id,
-          res.status,
-          res.contentType || null,
-          contentHash,
-          textHash,
-          current.title,
-          current.text,
-          JSON.stringify({ jobs: current.jobs, events: current.events, items: current.items, isFeed: current.isFeed }),
-        ],
+        `INSERT INTO snapshots (resource_id, status_code, content_type, content_hash, structured)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [r.id, res.status, res.contentType || null, hash, JSON.stringify({ jobs: current.jobs, complete: current.complete !== false })],
       );
       const snapshotId = snap.rows[0]!.id;
-      for (const c of diff.changes) {
+      for (const c of changes) {
         const ins = await client.query<{ id: number }>(
           `INSERT INTO changes (resource_id, snapshot_id, type, item_key, summary, data, search_text)
            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
@@ -304,10 +239,10 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
       }
       await client.query(
         `UPDATE resources SET last_checked_at = now(), last_status = $2, etag = $3, last_modified = $4, last_error = NULL,
-           consecutive_failures = 0, next_check_at = now() + make_interval(secs => $5), line_stats = $6,
-           current_snapshot_id = $7, last_changed_at = CASE WHEN $8 THEN now() ELSE last_changed_at END
+           consecutive_failures = 0, next_check_at = now() + make_interval(secs => $5),
+           current_snapshot_id = $6, last_changed_at = CASE WHEN $7 THEN now() ELSE last_changed_at END
          WHERE id = $1`,
-        [r.id, res.status, res.headers.etag ?? null, res.headers['last-modified'] ?? null, interval, JSON.stringify(stats), snapshotId, changeIds.length > 0],
+        [r.id, res.status, res.headers.etag ?? null, res.headers['last-modified'] ?? null, interval, snapshotId, changeIds.length > 0],
       );
       await client.query('COMMIT');
     } catch (err) {
@@ -318,15 +253,16 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
       client.release();
     }
 
-    for (const c of diff.changes) metrics.changes.inc({ type: c.type });
-    metrics.checks.inc({ outcome: changeIds.length ? 'changed' : 'first_snapshot' });
+    for (const c of changes) metrics.changes.inc({ type: c.type });
+    // A new snapshot without changes means only untracked fields moved (e.g. posted_at).
+    metrics.checks.inc({ outcome: changeIds.length ? 'changed' : prevRow ? 'unchanged' : 'first_snapshot' });
     if (changeIds.length) {
       ctx.log.info({ resource: r.id, url: r.url, changes: changeIds.length }, 'changes detected');
       await enqueueWebhooks(ctx, r.id, Math.min(...changeIds) - 1, Math.max(...changeIds)).catch((err) =>
         ctx.log.error({ err, resource: r.id }, 'failed to enqueue webhooks'),
       );
     }
-    return { ok: true, changed: changeIds.length > 0, changes: changeIds.length, notModified: false, firstSnapshot: !prevRow, suppressedLines: diff.suppressedLines };
+    return { ok: true, changed: changeIds.length > 0, changes: changeIds.length, notModified: false, firstSnapshot: !prevRow, jobs: current.jobs.length };
   } catch (err) {
     const code = err instanceof CheckFailure || err instanceof FetchError ? err.code : 'INTERNAL_ERROR';
     const message = (err as Error).message;

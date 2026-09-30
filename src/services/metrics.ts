@@ -58,9 +58,8 @@ class Histogram {
 
 export const metrics = {
   checks: new Counter('watchtower_checks_total', 'Resource checks by outcome (changed|unchanged|not_modified|error) and error code.'),
-  fetchSeconds: new Histogram('watchtower_fetch_duration_seconds', 'Duration of resource checks including robots.txt and confirmation fetches.'),
+  fetchSeconds: new Histogram('watchtower_fetch_duration_seconds', 'Duration of resource checks including robots.txt.'),
   changes: new Counter('watchtower_changes_emitted_total', 'Change events written, by type.'),
-  suppressed: new Counter('watchtower_volatile_lines_suppressed_total', 'Changed lines suppressed as volatile noise.'),
   webhooks: new Counter('watchtower_webhook_deliveries_total', 'Webhook delivery attempts by result.'),
   hostBusy: new Counter('watchtower_host_busy_total', 'Checks deferred because another fetch to the same host was in flight.'),
 };

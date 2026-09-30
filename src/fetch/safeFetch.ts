@@ -19,6 +19,8 @@ export interface FetchOptions {
   maxRedirects: number;
   userAgent: string;
   headers?: Record<string, string>;
+  /** A JSON body to POST instead of a GET (job-board search APIs). POSTs never follow redirects. */
+  jsonBody?: string;
 }
 
 export interface FetchResult {
@@ -128,15 +130,17 @@ export async function safeFetch(input: string, opts: FetchOptions): Promise<Fetc
     let res;
     try {
       res = await request(url, {
-        method: 'GET',
+        method: opts.jsonBody === undefined ? 'GET' : 'POST',
         dispatcher,
         signal,
         headers: {
           'user-agent': opts.userAgent,
           accept: 'text/html,application/xhtml+xml,application/json,application/ld+json,text/plain;q=0.9,*/*;q=0.1',
           'accept-encoding': 'gzip, deflate, br',
+          ...(opts.jsonBody === undefined ? {} : { 'content-type': 'application/json' }),
           ...opts.headers,
         },
+        body: opts.jsonBody,
       });
     } catch (err) {
       const e = err as Error & { code?: string; cause?: unknown };
@@ -153,6 +157,7 @@ export async function safeFetch(input: string, opts: FetchOptions): Promise<Fetc
 
     if (res.statusCode >= 300 && res.statusCode < 400 && res.statusCode !== 304 && headers.location) {
       discard(res.body as unknown as Readable);
+      if (opts.jsonBody !== undefined) throw new FetchError('TOO_MANY_REDIRECTS', 'POST requests do not follow redirects');
       if (hop >= opts.maxRedirects) throw new FetchError('TOO_MANY_REDIRECTS', `more than ${opts.maxRedirects} redirects`);
       let next: URL;
       try {

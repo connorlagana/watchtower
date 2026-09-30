@@ -1,15 +1,16 @@
 /**
- * Source adapters. A job watch on a Greenhouse, Lever, Ashby, Workable,
+ * Source adapters. A watch on a Greenhouse, Lever, Ashby, Workable,
  * SmartRecruiters or Recruitee board is fetched through that platform's
- * public job-board JSON API instead of scraping the HTML; everything else
- * goes through the generic HTML / feed path.
+ * public job-board JSON API instead of scraping the HTML. Workday and iCIMS
+ * sites need more than one request per check (see workday.ts / icims.ts).
+ * Any other careers page is read through its schema.org JobPosting markup.
  */
-import { extractFeed, looksLikeFeed } from './feed.js';
-import { extractHtml, normalizeLines, stableJsonLines } from './html.js';
+import { classify } from './classify.js';
+import { extractHtml } from './html.js';
+import { collectIcims, resolveIcims, searchUrlFor } from './icims.js';
 import { extractJsonLd, parseJsonLdBlocks } from './jsonld.js';
 import type { AdapterName, Extraction, JobItem } from './types.js';
-
-export type WatchKind = 'url' | 'jobs' | 'events';
+import { collectWorkday, pageBody, resolveWorkday } from './workday.js';
 
 export interface ResolvedSource {
   adapter: AdapterName;
@@ -37,58 +38,65 @@ export function canonicalUrl(input: string): string {
 
 const SLUG = /^[\w.-]+$/;
 
-export function resolveSource(input: string, kind: WatchKind): ResolvedSource {
+export function resolveSource(input: string): ResolvedSource {
   const u = new URL(input);
   const host = u.hostname.toLowerCase();
   const segs = u.pathname.split('/').filter(Boolean);
 
-  if (kind === 'jobs') {
-    // boards.greenhouse.io/{token}, job-boards.greenhouse.io/{token}, boards.greenhouse.io/embed/job_board?for={token}
-    if (/^(job-)?boards(\.eu)?\.greenhouse\.io$/.test(host)) {
-      const token = segs[0] === 'embed' ? u.searchParams.get('for') : segs[0];
-      if (token && /^[\w-]+$/.test(token)) {
-        const api = host.includes('.eu.') ? 'boards-api.eu.greenhouse.io' : 'boards-api.greenhouse.io';
-        return { adapter: 'greenhouse', fetchUrl: `https://${api}/v1/boards/${token}/jobs` };
-      }
-    }
-    if (/^boards-api(\.eu)?\.greenhouse\.io$/.test(host) && segs[0] === 'v1' && segs[1] === 'boards' && segs[2]) {
-      return { adapter: 'greenhouse', fetchUrl: `https://${host}/v1/boards/${segs[2]}/jobs` };
-    }
-    // jobs.lever.co/{company}
-    if (/^jobs(\.eu)?\.lever\.co$/.test(host) && segs[0] && /^[\w-]+$/.test(segs[0])) {
-      const api = host.includes('.eu.') ? 'api.eu.lever.co' : 'api.lever.co';
-      return { adapter: 'lever', fetchUrl: `https://${api}/v0/postings/${segs[0]}?mode=json` };
-    }
-    if (/^api(\.eu)?\.lever\.co$/.test(host) && segs[0] === 'v0' && segs[1] === 'postings' && segs[2]) {
-      return { adapter: 'lever', fetchUrl: `https://${host}/v0/postings/${segs[2]}?mode=json` };
-    }
-    // jobs.ashbyhq.com/{org}
-    if (host === 'jobs.ashbyhq.com' && segs[0] && SLUG.test(segs[0])) {
-      return { adapter: 'ashby', fetchUrl: `https://api.ashbyhq.com/posting-api/job-board/${segs[0]}` };
-    }
-    // apply.workable.com/{account} or {account}.workable.com
-    const workable = host === 'apply.workable.com' ? segs[0] : /^([\w-]+)\.workable\.com$/.exec(host)?.[1];
-    if (workable && SLUG.test(workable) && !['www', 'apply', 'jobs'].includes(workable)) {
-      return { adapter: 'workable', fetchUrl: `https://apply.workable.com/api/v1/widget/accounts/${workable}` };
-    }
-    // jobs.smartrecruiters.com/{company} or careers.smartrecruiters.com/{company}
-    if (/^(jobs|careers)\.smartrecruiters\.com$/.test(host) && segs[0] && SLUG.test(segs[0])) {
-      return { adapter: 'smartrecruiters', fetchUrl: `https://api.smartrecruiters.com/v1/companies/${segs[0]}/postings?limit=100` };
-    }
-    // {company}.recruitee.com
-    const recruitee = /^([\w-]+)\.recruitee\.com$/.exec(host)?.[1];
-    if (recruitee && recruitee !== 'www') {
-      return { adapter: 'recruitee', fetchUrl: `https://${recruitee}.recruitee.com/api/offers/` };
+  // boards.greenhouse.io/{token}, job-boards.greenhouse.io/{token}, boards.greenhouse.io/embed/job_board?for={token}
+  if (/^(job-)?boards(\.eu)?\.greenhouse\.io$/.test(host)) {
+    const token = segs[0] === 'embed' ? u.searchParams.get('for') : segs[0];
+    if (token && /^[\w-]+$/.test(token)) {
+      const api = host.includes('.eu.') ? 'boards-api.eu.greenhouse.io' : 'boards-api.greenhouse.io';
+      return { adapter: 'greenhouse', fetchUrl: `https://${api}/v1/boards/${token}/jobs` };
     }
   }
+  if (/^boards-api(\.eu)?\.greenhouse\.io$/.test(host) && segs[0] === 'v1' && segs[1] === 'boards' && segs[2]) {
+    return { adapter: 'greenhouse', fetchUrl: `https://${host}/v1/boards/${segs[2]}/jobs` };
+  }
+  // jobs.lever.co/{company}
+  if (/^jobs(\.eu)?\.lever\.co$/.test(host) && segs[0] && /^[\w-]+$/.test(segs[0])) {
+    const api = host.includes('.eu.') ? 'api.eu.lever.co' : 'api.lever.co';
+    return { adapter: 'lever', fetchUrl: `https://${api}/v0/postings/${segs[0]}?mode=json` };
+  }
+  if (/^api(\.eu)?\.lever\.co$/.test(host) && segs[0] === 'v0' && segs[1] === 'postings' && segs[2]) {
+    return { adapter: 'lever', fetchUrl: `https://${host}/v0/postings/${segs[2]}?mode=json` };
+  }
+  // jobs.ashbyhq.com/{org}
+  if (host === 'jobs.ashbyhq.com' && segs[0] && SLUG.test(segs[0])) {
+    return { adapter: 'ashby', fetchUrl: `https://api.ashbyhq.com/posting-api/job-board/${segs[0]}` };
+  }
+  // apply.workable.com/{account} or {account}.workable.com
+  const workable = host === 'apply.workable.com' ? segs[0] : /^([\w-]+)\.workable\.com$/.exec(host)?.[1];
+  if (workable && SLUG.test(workable) && !['www', 'apply', 'jobs'].includes(workable)) {
+    return { adapter: 'workable', fetchUrl: `https://apply.workable.com/api/v1/widget/accounts/${workable}` };
+  }
+  // jobs.smartrecruiters.com/{company} or careers.smartrecruiters.com/{company}
+  if (/^(jobs|careers)\.smartrecruiters\.com$/.test(host) && segs[0] && SLUG.test(segs[0])) {
+    return { adapter: 'smartrecruiters', fetchUrl: `https://api.smartrecruiters.com/v1/companies/${segs[0]}/postings?limit=100` };
+  }
+  // {company}.recruitee.com
+  const recruitee = /^([\w-]+)\.recruitee\.com$/.exec(host)?.[1];
+  if (recruitee && recruitee !== 'www') {
+    return { adapter: 'recruitee', fetchUrl: `https://${recruitee}.recruitee.com/api/offers/` };
+  }
+  const workday = resolveWorkday(u);
+  if (workday) return { adapter: 'workday', fetchUrl: workday.apiUrl };
+  const icims = resolveIcims(u);
+  if (icims) return { adapter: 'icims', fetchUrl: icims.sitemapUrl };
   return { adapter: 'html', fetchUrl: canonicalUrl(input) };
 }
 
-function jobsText(jobs: JobItem[]): string {
-  return jobs
-    .map((j) => [j.title, j.location, j.department].filter(Boolean).join(' — '))
-    .sort()
-    .join('\n');
+/** Adapters whose first request is a JSON POST rather than a GET. */
+export function primaryRequestBody(adapter: AdapterName): string | undefined {
+  return adapter === 'workday' ? pageBody(0) : undefined;
+}
+
+/** Adapters that need more than one request per check, and how many at most. */
+export function requestsPerCheck(adapter: AdapterName): number {
+  if (adapter === 'workday') return 10;
+  if (adapter === 'icims') return 2;
+  return 1;
 }
 
 function greenhouse(body: string): Extraction {
@@ -105,7 +113,7 @@ function greenhouse(body: string): Extraction {
       source: 'greenhouse',
     };
   });
-  return { title: null, text: jobsText(jobs), jobs, events: [] };
+  return { jobs };
 }
 
 function lever(body: string): Extraction {
@@ -123,7 +131,7 @@ function lever(body: string): Extraction {
       source: 'lever',
     };
   });
-  return { title: null, text: jobsText(jobs), jobs, events: [] };
+  return { jobs };
 }
 
 type Rec = Record<string, unknown>;
@@ -143,7 +151,7 @@ function ashby(body: string): Extraction {
       posted_at: s_(j.publishedAt),
       source: 'ashby' as const,
     }));
-  return { title: null, text: jobsText(jobs), jobs, events: [] };
+  return { jobs };
 }
 
 function workable(body: string): Extraction {
@@ -158,7 +166,7 @@ function workable(body: string): Extraction {
     posted_at: s_(j.published_on) ?? s_(j.created_at),
     source: 'workable' as const,
   }));
-  return { title: null, text: jobsText(jobs), jobs, events: [] };
+  return { jobs };
 }
 
 function smartrecruiters(body: string, fetchUrl?: string): Extraction {
@@ -177,7 +185,7 @@ function smartrecruiters(body: string, fetchUrl?: string): Extraction {
       source: 'smartrecruiters' as const,
     };
   });
-  return { title: null, text: jobsText(jobs), jobs, events: [] };
+  return { jobs };
 }
 
 function recruitee(body: string): Extraction {
@@ -192,15 +200,10 @@ function recruitee(body: string): Extraction {
     posted_at: s_(j.published_at),
     source: 'recruitee' as const,
   }));
-  return { title: null, text: jobsText(jobs), jobs, events: [] };
+  return { jobs };
 }
 
-export function extract(
-  adapter: AdapterName,
-  body: string,
-  contentType: string,
-  opts: { baseUrl?: string; selector?: string } = {},
-): Extraction {
+function extractOne(adapter: AdapterName, body: string, contentType: string, opts: { baseUrl?: string }): Extraction {
   if (adapter === 'greenhouse') return greenhouse(body);
   if (adapter === 'lever') return lever(body);
   if (adapter === 'ashby') return ashby(body);
@@ -209,18 +212,33 @@ export function extract(
   if (adapter === 'recruitee') return recruitee(body);
 
   const ct = contentType.toLowerCase();
-  if (looksLikeFeed(body, ct)) return extractFeed(body, opts.baseUrl);
-  const looksHtml = ct.includes('html') || (!ct && /^\s*<(!doctype|html|head|body)/i.test(body));
-  if (looksHtml) return extractHtml(body, opts);
+  if (ct.includes('ld+json')) return extractJsonLd(parseJsonLdBlocks([body]), opts.baseUrl);
+  if (ct.includes('html') || (!ct && /^\s*<(!doctype|html|head|body)/i.test(body))) return extractHtml(body, opts);
+  return { jobs: [] };
+}
 
-  if (ct.includes('json')) {
-    try {
-      const parsed = JSON.parse(body);
-      const ld = ct.includes('ld+json') ? extractJsonLd(parseJsonLdBlocks([body]), opts.baseUrl) : { jobs: [], events: [] };
-      return { title: null, text: normalizeLines(stableJsonLines(parsed).join('\n')), ...ld };
-    } catch {
-      /* fall through to plain text */
-    }
+const finalize = (x: Extraction): Extraction => ({ complete: true, ...x, jobs: classify(x.jobs) });
+
+/** Extract jobs from a single response (every adapter except Workday and iCIMS). */
+export function extract(adapter: AdapterName, body: string, contentType: string, opts: { baseUrl?: string } = {}): Extraction {
+  return finalize(extractOne(adapter, body, contentType, opts));
+}
+
+export interface MoreRequests {
+  /** Fetch another URL of the same source; throws on any failure. */
+  (url: string, jsonBody?: string): Promise<string>;
+}
+
+/**
+ * Extract jobs from the primary response, making follow-up requests through
+ * `more` for adapters that need them.
+ */
+export async function collect(adapter: AdapterName, fetchUrl: string, primary: { body: string; contentType: string; finalUrl: string }, more: MoreRequests): Promise<Extraction> {
+  if (adapter === 'workday') return finalize(await collectWorkday(fetchUrl, primary.body, (offset) => more(fetchUrl, pageBody(offset))));
+  if (adapter === 'icims') {
+    // The search page is an enrichment: a failure there still leaves a complete job list.
+    const search = await more(searchUrlFor(fetchUrl)).catch(() => null);
+    return finalize(collectIcims(primary.body, search));
   }
-  return { title: null, text: normalizeLines(body), jobs: [], events: [] };
+  return extract(adapter, primary.body, primary.contentType, { baseUrl: primary.finalUrl });
 }

@@ -26,7 +26,7 @@ export async function enqueueWebhooks(ctx: Ctx, resourceId: string, minId: numbe
   const { rowCount } = await ctx.db.query(
     `INSERT INTO webhook_deliveries (watch_id, payload)
      SELECT w.id, jsonb_build_object(
-              'watch_id', w.id, 'watch_label', w.label, 'watch_kind', w.kind, 'url', w.source_url,
+              'watch_id', w.id, 'watch_label', w.label, 'url', w.source_url,
               'changes', jsonb_agg(jsonb_build_object(
                  'id', c.id, 'type', c.type, 'summary', c.summary, 'detected_at', c.detected_at, 'data', c.data) ORDER BY c.id))
        FROM watches w

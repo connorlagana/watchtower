@@ -2,17 +2,25 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authenticate, bearerToken, createClient } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
-import { ackChanges, checkNow, createWatch, deleteWatch, getChanges, getWatch, listWatches } from '../services/watches.js';
+import { SENIORITIES } from '../extract/types.js';
+import { ackChanges, checkNow, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
 
-const createWatchBody = z.object({
-  type: z.enum(['url', 'jobs', 'events']),
-  url: z.string().url().max(2048),
-  keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
-  selector: z.string().max(300).optional(),
-  interval_minutes: z.number().int().min(1).max(10080).optional(),
-  label: z.string().max(200).optional(),
-  webhook_url: z.string().url().max(2048).optional(),
-});
+const createWatchBody = z
+  .object({
+    // Optional; every watch is a job watch. Accepted for clients written against the earlier multi-type API.
+    type: z.literal('jobs').optional(),
+    url: z.string().url().max(2048).optional(),
+    urls: z.array(z.string().url().max(2048)).min(1).max(MAX_BATCH_URLS).optional(),
+    keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
+    exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
+    locations: z.array(z.string().min(1).max(100)).max(20).optional(),
+    seniority: z.array(z.enum(SENIORITIES)).optional(),
+    remote_only: z.boolean().optional(),
+    interval_minutes: z.number().int().min(1).max(10080).optional(),
+    label: z.string().max(200).optional(),
+    webhook_url: z.string().url().max(2048).optional(),
+  })
+  .refine((b) => (b.url === undefined) !== (b.urls === undefined), { message: 'pass url or urls, not both' });
 
 const ackBody = z.object({
   cursor: z.number().int().min(0),
@@ -58,10 +66,10 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
 
   app.post('/v1/watches', async (req, reply) => {
     const client = await auth(req);
-    const body = parse(createWatchBody, req.body);
-    const watch = await createWatch(ctx, client, { ...body, kind: body.type });
+    const { type: _type, url, urls, ...body } = parse(createWatchBody, req.body);
     reply.code(201);
-    return watch;
+    if (urls) return createWatches(ctx, client, { ...body, urls });
+    return createWatch(ctx, client, { ...body, url: url! });
   });
 
   app.get('/v1/watches', async (req) => listWatches(ctx, await auth(req)));

@@ -1,20 +1,27 @@
 import { promisify } from 'node:util';
-import * as cheerio from 'cheerio';
-import { canonicalUrl, resolveSource, type WatchKind } from '../extract/adapters.js';
-import { CHANGE_TYPES_BY_KIND, inTextDateWindow } from '../extract/diff.js';
-import { API_ADAPTERS, type EventItem, type FeedItem, type JobItem } from '../extract/types.js';
+import { canonicalUrl, resolveSource } from '../extract/adapters.js';
+import { JOB_CHANGE_TYPES, jobSearch } from '../extract/diff.js';
+import { PLATFORM_ADAPTERS, SENIORITIES, type JobItem, type Seniority } from '../extract/types.js';
 import { createSafeLookup, validateUrl } from '../security/ssrf.js';
 import { checkResource, type CheckOutcome, type ResourceRow } from './checker.js';
 import type { Client } from './clients.js';
 import { AppError, WATCH_SEES_CHANGE, type Ctx } from './context.js';
 import { newWebhookSecret } from './webhooks.js';
 
-export interface CreateWatchInput {
-  kind: WatchKind;
+export interface JobFilters {
+  /** Report only jobs whose title/location/department/company contains one of these (case-insensitive). */
+  keywords?: string[];
+  /** Never report jobs mentioning one of these. */
+  exclude_keywords?: string[];
+  /** Report only jobs whose location contains one of these. */
+  locations?: string[];
+  seniority?: Seniority[];
+  remote_only?: boolean;
+}
+
+export interface CreateWatchInput extends JobFilters {
   url: string;
   label?: string;
-  keywords?: string[];
-  selector?: string;
   interval_minutes?: number;
   /** Where to POST matching changes (optional; polling get_changes always works). */
   webhook_url?: string;
@@ -24,10 +31,13 @@ interface WatchRow {
   id: string;
   client_id: string;
   resource_id: string;
-  kind: WatchKind;
   source_url: string;
   label: string | null;
   keywords: string[];
+  exclude_keywords: string[];
+  locations: string[];
+  seniority: Seniority[];
+  remote_only: boolean;
   change_types: string[];
   interval_seconds: number;
   baseline: number;
@@ -40,42 +50,44 @@ interface WatchRow {
 type JoinedRow = WatchRow & {
   r_url: string;
   r_adapter: string;
-  r_selector: string;
   last_checked_at: Date | null;
   last_changed_at: Date | null;
   last_status: number | null;
   last_error: string | null;
   next_check_at: Date;
-  s_title: string | null;
   s_fetched_at: Date | null;
   s_hash: string | null;
-  s_text: string | null;
-  s_structured: { jobs?: JobItem[]; events?: EventItem[]; items?: FeedItem[]; isFeed?: boolean } | null;
+  s_structured: { jobs?: JobItem[]; complete?: boolean } | null;
   pending: number;
 };
 
 const MAX_KEYWORDS = 20;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function matchesKeywords(text: string, keywords: string[]): boolean {
-  if (keywords.length === 0) return true;
-  const t = text.toLowerCase();
-  return keywords.some((k) => t.includes(k));
+const normalizeTerms = (terms: string[] | undefined) => [...new Set((terms ?? []).map((k) => k.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_KEYWORDS);
+
+/** The JS twin of WATCH_SEES_CHANGE, for the current job list. */
+export function jobMatches(job: JobItem, w: Required<JobFilters>): boolean {
+  const text = jobSearch(job);
+  const location = (job.location ?? '').toLowerCase();
+  return (
+    (w.keywords.length === 0 || w.keywords.some((k) => text.includes(k))) &&
+    !w.exclude_keywords.some((k) => text.includes(k)) &&
+    (!w.remote_only || job.remote === true) &&
+    (w.locations.length === 0 || w.locations.some((l) => location.includes(l))) &&
+    (w.seniority.length === 0 || (job.seniority !== undefined && w.seniority.includes(job.seniority)))
+  );
 }
 
 function presentWatch(ctx: Ctx, row: JoinedRow, opts: { includeCurrent: boolean }) {
-  const jobs = (row.s_structured?.jobs ?? []).filter((j) =>
-    matchesKeywords([j.title, j.location, j.department, j.company].filter(Boolean).join(' '), row.keywords),
-  );
-  const events = (row.s_structured?.events ?? [])
-    .filter((e) => inTextDateWindow(e))
-    .filter((e) => matchesKeywords([e.name, e.start_date, e.location].filter(Boolean).join(' '), row.keywords));
+  const allJobs = row.s_structured?.jobs ?? [];
+  const filters = { keywords: row.keywords, exclude_keywords: row.exclude_keywords, locations: row.locations, seniority: row.seniority, remote_only: row.remote_only };
+  const jobs = allJobs.filter((j) => jobMatches(j, filters));
   const watch: Record<string, unknown> = {
     id: row.id,
-    kind: row.kind,
     url: row.source_url,
     label: row.label,
-    keywords: row.keywords,
+    filters,
     webhook_url: row.webhook_url,
     change_types: row.change_types,
     interval_minutes: Math.round(row.interval_seconds / 60),
@@ -87,7 +99,6 @@ function presentWatch(ctx: Ctx, row: JoinedRow, opts: { includeCurrent: boolean 
       id: row.resource_id,
       fetch_url: row.r_url,
       adapter: row.r_adapter,
-      selector: row.r_selector || null,
       last_checked_at: row.last_checked_at,
       last_changed_at: row.last_changed_at,
       last_status: row.last_status,
@@ -97,29 +108,22 @@ function presentWatch(ctx: Ctx, row: JoinedRow, opts: { includeCurrent: boolean 
     },
     snapshot: row.s_hash
       ? {
-          title: row.s_title,
           fetched_at: row.s_fetched_at,
           content_hash: row.s_hash,
-          is_feed: row.s_structured?.isFeed ?? false,
-          jobs_count: row.s_structured?.jobs?.length ?? 0,
-          events_count: events.length,
-          items_count: row.s_structured?.items?.length ?? 0,
+          jobs_count: allJobs.length,
+          matching_jobs_count: jobs.length,
+          complete: row.s_structured?.complete !== false,
         }
       : null,
   };
-  if (opts.includeCurrent && row.s_hash) {
-    if (row.kind === 'jobs') watch.current_jobs = jobs.slice(0, 50);
-    else if (row.kind === 'events') watch.current_events = events.slice(0, 50);
-    else if (row.s_structured?.isFeed) watch.current_items = (row.s_structured.items ?? []).slice(0, 20);
-    else watch.current_text_excerpt = (row.s_text ?? '').slice(0, 1500);
-  }
+  if (opts.includeCurrent && row.s_hash) watch.current_jobs = jobs.slice(0, 50);
   return watch;
 }
 
 const SELECT_JOINED = `
-  SELECT w.*, r.url AS r_url, r.adapter AS r_adapter, r.selector AS r_selector,
+  SELECT w.*, r.url AS r_url, r.adapter AS r_adapter,
          r.last_checked_at, r.last_changed_at, r.last_status, r.last_error, r.next_check_at,
-         s.title AS s_title, s.fetched_at AS s_fetched_at, s.content_hash AS s_hash, s.text AS s_text, s.structured AS s_structured,
+         s.fetched_at AS s_fetched_at, s.content_hash AS s_hash, s.structured AS s_structured,
          (SELECT count(*) FROM changes c WHERE c.resource_id = w.resource_id AND c.id > w.cursor AND ${WATCH_SEES_CHANGE})::int AS pending
     FROM watches w
     JOIN resources r ON r.id = w.resource_id
@@ -155,17 +159,17 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
   const parsed = await validatePublicUrl(ctx, input.url, 'URL_NOT_ALLOWED');
   const webhookUrl = input.webhook_url ? (await validatePublicUrl(ctx, input.webhook_url, 'WEBHOOK_URL_NOT_ALLOWED')).toString() : null;
 
-  const source = resolveSource(parsed.toString(), input.kind);
+  const source = resolveSource(parsed.toString());
   const host = hostOf(source.fetchUrl);
-  const keywords = [...new Set((input.keywords ?? []).map((k) => k.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_KEYWORDS);
-  const selector = input.kind === 'url' ? (input.selector ?? '').trim().slice(0, 300) : '';
-  if (selector) {
-    try {
-      cheerio.load('<div></div>')(selector);
-    } catch {
-      throw new AppError(400, 'INVALID_SELECTOR', `invalid CSS selector "${selector}"`);
-    }
-  }
+  const filters: Required<JobFilters> = {
+    keywords: normalizeTerms(input.keywords),
+    exclude_keywords: normalizeTerms(input.exclude_keywords),
+    locations: normalizeTerms(input.locations),
+    seniority: [...new Set((input.seniority ?? []).filter((x) => (SENIORITIES as readonly string[]).includes(x)))],
+    remote_only: input.remote_only === true,
+  };
+  // Resources keep a selector column from the page-watch era; job resources never narrow by one.
+  const selector = '';
   const requested = (input.interval_minutes ?? ctx.config.defaultCheckIntervalSeconds / 60) * 60;
   const intervalSeconds = Math.round(Math.min(Math.max(requested, ctx.config.minCheckIntervalSeconds), 7 * 86_400));
   const webhookSecret = webhookUrl ? newWebhookSecret() : null;
@@ -177,7 +181,7 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
     await db.query('BEGIN');
     await db.query('SELECT id FROM clients WHERE id = $1 FOR UPDATE', [client.id]);
     const { rows: counts } = await db.query<{ total: number; on_host: number }>(
-      `SELECT count(*)::int AS total, count(*) FILTER (WHERE r.host = $2)::int AS on_host
+      `SELECT count(*)::int AS total, count(*) FILTER (WHERE r.host = $2 AND r.adapter = 'html')::int AS on_host
          FROM watches w JOIN resources r ON r.id = w.resource_id
         WHERE w.client_id = $1 AND w.deleted_at IS NULL`,
       [client.id, host],
@@ -185,7 +189,8 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
     if ((counts[0]?.total ?? 0) >= ctx.config.maxWatchesPerClient) {
       throw new AppError(409, 'WATCH_LIMIT', `each client may have at most ${ctx.config.maxWatchesPerClient} active watches; delete one first`);
     }
-    if ((counts[0]?.on_host ?? 0) >= ctx.config.maxWatchesPerClientPerHost) {
+    // Boards on a platform share its API host but are different companies; the per-host cap is for arbitrary sites.
+    if (!PLATFORM_ADAPTERS.has(source.adapter) && (counts[0]?.on_host ?? 0) >= ctx.config.maxWatchesPerClientPerHost) {
       throw new AppError(409, 'HOST_WATCH_LIMIT', `each client may have at most ${ctx.config.maxWatchesPerClientPerHost} watches on ${host}`);
     }
 
@@ -202,8 +207,8 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
         throw new AppError(503, 'CAPACITY', 'Watchtower is at capacity for new resources; try again later or watch an already-monitored URL');
       }
       // Platform job-board APIs are built for this traffic; arbitrary sites get a per-host cap.
-      if (!API_ADAPTERS.has(source.adapter) && (cap[0]?.on_host ?? 0) >= ctx.config.maxResourcesPerHost) {
-        throw new AppError(429, 'HOST_CAPACITY', `too many distinct URLs on ${host} are already monitored; watch one of the existing pages or use a CSS selector`);
+      if (!PLATFORM_ADAPTERS.has(source.adapter) && (cap[0]?.on_host ?? 0) >= ctx.config.maxResourcesPerHost) {
+        throw new AppError(429, 'HOST_CAPACITY', `too many distinct URLs on ${host} are already monitored; watch one of the existing pages`);
       }
     }
 
@@ -217,17 +222,21 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
     const { rows: maxRows } = await db.query<{ m: number | null }>('SELECT max(id) AS m FROM changes WHERE resource_id = $1', [resource.id]);
     const baseline = maxRows[0]?.m ?? 0;
     const { rows } = await db.query<{ id: string }>(
-      `INSERT INTO watches (client_id, resource_id, kind, source_url, label, keywords, change_types, interval_seconds, baseline, cursor,
-                            webhook_url, webhook_secret)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11) RETURNING id`,
+      `INSERT INTO watches (client_id, resource_id, kind, source_url, label, keywords, exclude_keywords, locations, seniority, remote_only,
+                            change_types, interval_seconds, baseline, cursor, webhook_url, webhook_secret)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14, $15) RETURNING id`,
       [
         client.id,
         resource.id,
-        input.kind,
+        'jobs',
         canonicalUrl(parsed.toString()),
         input.label?.slice(0, 200) ?? null,
-        keywords,
-        CHANGE_TYPES_BY_KIND[input.kind],
+        filters.keywords,
+        filters.exclude_keywords,
+        filters.locations,
+        filters.seniority,
+        filters.remote_only,
+        JOB_CHANGE_TYPES,
         intervalSeconds,
         baseline,
         webhookUrl,
@@ -257,6 +266,16 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
       await ctx.db.query("UPDATE watches SET deleted_at = now(), delete_reason = 'unmonitorable' WHERE id = $1", [watchId]);
       throw new AppError(422, initial.errorCode, `cannot monitor this URL: ${initial.error}`);
     }
+    // A careers page on no supported platform and without JobPosting markup would never report anything.
+    if (initial.ok && initial.jobs === 0 && !PLATFORM_ADAPTERS.has(resource.adapter)) {
+      await ctx.db.query("UPDATE watches SET deleted_at = now(), delete_reason = 'no_job_data' WHERE id = $1", [watchId]);
+      throw new AppError(
+        422,
+        'NO_JOB_DATA',
+        'no job postings found at this URL. Watchtower reads Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS boards, ' +
+          'and other careers pages that publish schema.org JobPosting markup. If the company uses one of those platforms, pass the board URL instead.',
+      );
+    }
   }
   const watch = await getWatch(ctx, client, watchId, { includeCurrent: true });
   return {
@@ -269,6 +288,32 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
           ? { ok: false, error_code: 'HOST_BUSY', note: 'the host is busy; the initial snapshot will be taken within seconds' }
           : { ok: false, error_code: initial.errorCode, error: initial.error, note: 'will retry automatically with backoff' }
       : { ok: true, shared_resource: true, note: 'another watch already monitors this resource; reusing its snapshot' },
+  };
+}
+
+export const MAX_BATCH_URLS = 25;
+
+/**
+ * Watch several boards with the same filters in one call. Each URL succeeds or
+ * fails on its own; the initial snapshots run concurrently, and boards on a
+ * busy host are deferred to the scheduler rather than waited for.
+ */
+export async function createWatches(ctx: Ctx, client: Client, input: Omit<CreateWatchInput, 'url'> & { urls: string[] }) {
+  const urls = [...new Set(input.urls)].slice(0, MAX_BATCH_URLS);
+  const results = await Promise.all(
+    urls.map(async (url) => {
+      try {
+        return { url, watch: await createWatch(ctx, client, { ...input, url }) };
+      } catch (err) {
+        const e = err instanceof AppError ? err : new AppError(500, 'INTERNAL_ERROR', 'internal error');
+        if (e.code === 'INTERNAL_ERROR') ctx.log.error({ err, url }, 'batch watch creation failed');
+        return { url, error: e.code, message: e.message };
+      }
+    }),
+  );
+  return {
+    watches: results.filter((r) => 'watch' in r).map((r) => r.watch),
+    errors: results.filter((r) => 'error' in r),
   };
 }
 
@@ -342,7 +387,6 @@ interface ChangeRow {
   detected_at: Date;
   watch_id: string;
   label: string | null;
-  kind: string;
   source_url: string;
 }
 
@@ -355,7 +399,7 @@ export async function getChanges(ctx: Ctx, client: Client, input: GetChangesInpu
   const since = input.since ?? null;
 
   const { rows } = await ctx.db.query<ChangeRow>(
-    `SELECT c.id, c.type, c.summary, c.data, c.detected_at, w.id AS watch_id, w.label, w.kind, w.source_url
+    `SELECT c.id, c.type, c.summary, c.data, c.detected_at, w.id AS watch_id, w.label, w.source_url
        FROM watches w
        JOIN changes c ON c.resource_id = w.resource_id
       WHERE w.client_id = $1 AND w.deleted_at IS NULL
@@ -387,7 +431,6 @@ export async function getChanges(ctx: Ctx, client: Client, input: GetChangesInpu
       id: r.id,
       watch_id: r.watch_id,
       watch_label: r.label,
-      watch_kind: r.kind,
       url: r.source_url,
       type: r.type,
       summary: r.summary,

@@ -1,13 +1,15 @@
 # Watchtower
 
-**Stop repeatedly browsing the same pages. Watchtower monitors public internet resources for AI agents and returns structured changes.**
+**Job-board monitoring for AI agents. Watch a company's openings once and get only the new, removed and changed postings as structured JSON.**
 
-An agent creates a persistent watch once: "tell me when this page changes", "tell me when a new iOS job appears", "tell me when this event adds a date". Watchtower checks the resource on a schedule and remembers what it saw. `get_changes` then returns only what changed, as structured JSON, so the agent never has to re-read the page.
+Agents are bad at waiting for a job to be posted. A session lasts minutes, careers pages are heavy to re-read, and "has Acme posted an iOS role yet?" turns into re-browsing the same page every day. With Watchtower the agent creates a watch once. Watchtower checks the board on a schedule and remembers which jobs were open. `get_changes` then returns only `JOB_ADDED`, `JOB_REMOVED` and `JOB_UPDATED` events, and a webhook can wake the agent when one arrives.
 
-- **MCP** (Streamable HTTP) and **REST**, backed by the same service layer
-- Free and anonymous: a client gets a token and up to 10 watches
-- TypeScript, Node.js 22, Fastify 5, PostgreSQL, the official MCP TypeScript SDK
-- No LLM or third-party API keys required
+- **Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS** are read through each platform's own endpoints: no bot walls. Any other careers page works if it publishes schema.org `JobPosting` markup.
+- **Filters on the watch**, so `get_changes` only returns what matters: `keywords`, `exclude_keywords`, `locations`, `seniority` and `remote_only`. Every job carries derived `remote` and `seniority` fields.
+- **Many companies in one call**: pass `urls` instead of `url`.
+- **MCP** (Streamable HTTP) and **REST**, backed by the same service layer.
+- Free and anonymous: a client gets a token and up to 50 watches (one per board).
+- TypeScript, Node.js 22, Fastify 5, PostgreSQL, the official MCP TypeScript SDK. No LLM or third-party API keys required.
 
 ## Quick start
 
@@ -28,25 +30,22 @@ npm run dev                         # or: npm run build && npm start
 
 ## Demo
 
-`npm run demo` (with `DATABASE_URL` set) runs the core loop end to end against a local fixture "careers page":
+`npm run demo` (with `DATABASE_URL` set) runs the core loop end to end against a local fixture careers page:
 
-1. create client → 2. create a job watch with keyword `ios` (takes the initial snapshot) → 3. a second watch on the same URL reuses the same resource → 4. a re-check where only volatile noise changed (session token, "N minutes ago") reports no change → 5. the source adds an iOS job and an Android job → 6. Watchtower checks and detects the change → 7. an MCP client calls `get_changes`:
+1. create client → 2. create a job watch with keyword `ios` (takes the initial snapshot) → 3. a second agent watches the same board and reuses the same resource → 4. a re-check where only the page around the jobs changed (session token, "N minutes ago") reports no change → 5. the source adds an iOS job and an Android job → 6. Watchtower checks and detects the change → 7. an MCP client calls `get_changes`:
 
 ```json
 {
   "changes": [
-    { "type": "CONTENT_CHANGED", "watch_kind": "url",
-      "summary": "Content changed: +2/-0 lines — \"Senior iOS Engineer — Remote - US\"",
-      "data": { "added": ["Senior iOS Engineer — Remote - US", "Android Engineer — Berlin"], "removed": [] } },
-    { "type": "JOB_ADDED", "watch_kind": "jobs",
+    { "type": "JOB_ADDED",
       "summary": "New job: Senior iOS Engineer (Remote - US)",
       "data": { "job": { "title": "Senior iOS Engineer", "location": "Remote - US", "company": "Acme Robotics", "url": "…/careers/ios-303" } } }
   ],
-  "cursor": 3, "has_more": false
+  "cursor": 2, "has_more": false
 }
 ```
 
-The Android job is filtered out by the job watch's keyword. 8. A second `get_changes` call returns `[]`.
+The Android job is filtered out by the keyword. 8. A second `get_changes` call returns `[]`. 9. The second agent, with no keyword, sees both new roles.
 
 The demo runs its fixture on 127.0.0.1, so it turns on `ALLOW_PRIVATE_NETWORKS` for its own process only.
 
@@ -58,20 +57,18 @@ The demo runs its fixture on 127.0.0.1, so it turns on `ALLOW_PRIVATE_NETWORKS` 
 
 | Tool | What it does |
 |---|---|
-| `watch_url` | Watch a public page or RSS/Atom feed. Pages emit `CONTENT_CHANGED` with added/removed lines, word-level diffs and context. Feeds emit `ITEM_ADDED` per new entry. Optional `keywords` and CSS `selector`. |
-| `watch_jobs` | Watch a job board. Greenhouse, Lever, Ashby, Workable, SmartRecruiters and Recruitee use their public job-board APIs; other pages use schema.org `JobPosting`. Emits `JOB_ADDED` / `JOB_REMOVED` / `JOB_UPDATED`. Optional `keywords`. |
-| `watch_events` | Watch an event page. Uses schema.org `Event` JSON-LD, falling back to future dates in the main page text. Emits `EVENT_ADDED` / `EVENT_REMOVED` / `EVENT_UPDATED` / `EVENT_RESCHEDULED`. |
+| `watch_jobs` | Watch a job board (`url`) or several with the same filters (`urls`, up to 25; returns `watches` and per-URL `errors`). Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS use their own endpoints; other careers pages use schema.org `JobPosting`, and pages without it are rejected with `NO_JOB_DATA`. Emits `JOB_ADDED` / `JOB_REMOVED` / `JOB_UPDATED`. Filters: `keywords`, `exclude_keywords`, `locations`, `seniority`, `remote_only`. |
 | `get_changes` | Changes since your last call (the cursor advances). `peek`, `since` (replay), `watch_id`, `limit`. |
 | `ack_changes` | Acknowledge a cursor after `get_changes(peek=true)`, for at-least-once processing. |
 | `list_watches` | Your watches, with health, expiry and pending-change counts. |
-| `get_watch` | One watch plus the current state: matching jobs, events, feed items, or a text excerpt. |
+| `get_watch` | One watch plus the jobs currently open that match its keywords. |
 | `delete_watch` | Stop monitoring and free a slot. |
 
-Every `watch_*` tool also accepts `webhook_url` for push delivery (see below).
+`watch_jobs` also accepts `webhook_url` for push delivery (see below).
 
-The tool descriptions and server `instructions` tell agents to prefer Watchtower over re-browsing for recurring checks.
+The tool descriptions and server `instructions` tell agents to prefer Watchtower over re-checking careers pages.
 
-Auth: send `Authorization: Bearer <token>` on the MCP connection, or pass `client_token` as a tool argument. If a `watch_*` call arrives with no token, Watchtower creates an anonymous client and returns its token in the result, so an agent can start with zero setup. This draws on the same per-address budget as `POST /v1/clients`.
+Auth: send `Authorization: Bearer <token>` on the MCP connection, or pass `client_token` as a tool argument. If a `watch_jobs` call arrives with no token, Watchtower creates an anonymous client and returns its token in the result, so an agent can start with zero setup. This draws on the same per-address budget as `POST /v1/clients`.
 
 ## REST API
 
@@ -80,7 +77,7 @@ All endpoints except `POST /v1/clients` need `Authorization: Bearer <token>`.
 | Method & path | |
 |---|---|
 | `POST /v1/clients` | Create an anonymous client. Returns `token` (shown once). Rate-limited per address. |
-| `POST /v1/watches` | `{ "type": "url"\|"jobs"\|"events", "url", "keywords"?, "selector"?, "interval_minutes"?, "label"?, "webhook_url"? }` |
+| `POST /v1/watches` | `{ "url" \| "urls", "keywords"?, "exclude_keywords"?, "locations"?, "seniority"?, "remote_only"?, "interval_minutes"?, "label"?, "webhook_url"? }`. With `urls` the response is `{ watches, errors }`. `"type": "jobs"` is accepted for older clients. |
 | `GET /v1/watches` | List watches. |
 | `GET /v1/watches/:id` | Watch detail and current state. |
 | `DELETE /v1/watches/:id` | Delete. |
@@ -92,7 +89,7 @@ Also served: `/` (homepage/docs), `/llms.txt`, `/.well-known/watchtower.json`, `
 
 Errors look like `{ "error": "WATCH_LIMIT", "message": "…" }`.
 
-- **Can't be monitored legitimately (422):** `ROBOTS_DISALLOWED`, `BOT_CHALLENGE`, `ACCESS_DENIED`, `SSRF_BLOCKED`, `UNSUPPORTED_CONTENT_TYPE`, `BODY_TOO_LARGE`.
+- **Can't be monitored (422):** `NO_JOB_DATA` (no supported platform and no `JobPosting` markup), `ROBOTS_DISALLOWED`, `BOT_CHALLENGE`, `ACCESS_DENIED`, `SSRF_BLOCKED`, `UNSUPPORTED_CONTENT_TYPE`, `BODY_TOO_LARGE`.
 - **Capacity:** `WATCH_LIMIT` and `HOST_WATCH_LIMIT` (409), `HOST_CAPACITY` (429), `CAPACITY` (503).
 - **Transient failures** (timeouts, 5xx, 404) keep the watch. They show up in `resource.last_error` and are retried with exponential backoff.
 
@@ -113,43 +110,30 @@ A watch stays alive as long as someone uses it: `get_changes`, `get_watch`, `lis
 ## How it works
 
 ```
- watches (per client) ──many-to-one──▶ resources (url + selector + adapter)
+ watches (per client) ──many-to-one──▶ resources (fetch url + adapter)
                                             │  scheduler: due? one per host, host lease held
                                             ▼
-                     fetch ─▶ extract main content / JSON-LD / feed / job API
-                                            │  diff vs previous snapshot, minus learned noise
-                                            │  change? fetch again, keep only what both fetches agree on
+                     fetch ─▶ job-board API adapter, or JobPosting JSON-LD
+                                            │  diff the job set vs the previous snapshot
                                             ▼
-                     snapshot + typed change events, one transaction
-                                            │  read through each watch's type / keyword filter
+                     snapshot + typed job events, one transaction
+                                            │  read through each watch's keyword filter
                                             ▼
                       get_changes (per-watch cursor)   ·   webhook outbox → signed POST
 ```
 
-- **Resources vs. watches.** Watches are per-client intents. Resources are what actually gets fetched. Any number of watches on the same URL (across clients) share one resource, one fetch per interval, and one set of snapshots. URLs are canonicalized before sharing: tracking parameters (`utm_*`, `fbclid`, `gclid`, …) are dropped and the query is sorted. The resource is checked at the shortest interval any of its active watches asks for, but never more often than `MIN_CHECK_INTERVAL_SECONDS` (default 5 minutes).
-- **Change events are written once per resource.** Each watch reads them through its own filter:
-  - `change_types` comes from the watch kind.
-  - `keywords` does a case-insensitive match against the change's search text.
-
-  A watch never sees changes from before it was created. Change ids double as cursors, so change-writing transactions are serialized. That keeps ids visible in order, so a slow concurrent check can't commit an id that a reader has already moved past.
-- **Politeness.** At most one fetch is in flight per website across all replicas, using a Postgres host lease with `HOST_MIN_SPACING_MS` between requests. Each scheduler tick claims at most one resource per host. Watchtower also:
+- **Board URLs map to platform endpoints.** `boards.greenhouse.io/acme`, `jobs.lever.co/acme`, `jobs.ashbyhq.com/acme`, `apply.workable.com/acme`, `jobs.smartrecruiters.com/Acme` and `acme.recruitee.com` (plus their EU and embed variants) are fetched from each platform's public job-board API in one request. Other URLs are fetched as HTML and read through schema.org `JobPosting` JSON-LD (including `@graph` and `ItemList`). Only the job list is compared, so page churn around it (session tokens, "rendered N minutes ago", banners) never registers as a change.
+  - **Workday** (`acme.wd5.myworkdayjobs.com/Careers`, `wd3.myworkdaysite.com/recruiting/acme/External`): the site's own search endpoint, a JSON POST that returns postings newest first, 20 per page. A check reads the newest 200 (10 requests). Boards with more postings are marked `complete: false` on the snapshot and never emit `JOB_REMOVED`, because a job leaving the window isn't a removal. Job links point at the public site; the relative "Posted 3 Days Ago" is not kept.
+  - **iCIMS** (`careers-acme.icims.com`): the portal's `sitemap.xml` lists every open job in one request (id plus a slug of the title), and the first page of `/jobs/search` gives the newest ~50 their real title, location and posting date. A check reads both. Jobs seen only in the sitemap are `partial: true` (title from the slug, no location); details learned earlier are carried forward, and a partial entry becoming a full one is not reported as an update.
+- **Derived fields.** Every job gets `remote` (title or location says remote, and not hybrid/on-site) and `seniority` (intern, entry, mid, senior, staff, principal, manager, director, from the title; management words win over IC levels, and "mid" means the title carries no level). These are heuristics over the text, which is why they are exposed on the job rather than hidden inside the filter.
+- **Resources vs. watches.** Watches are per-client intents. Resources are what actually gets fetched. Any number of watches on the same board (across clients) share one resource, one fetch per interval, and one set of snapshots. URLs are canonicalized before sharing: tracking parameters (`utm_*`, `fbclid`, `gclid`, …) are dropped and the query is sorted. The resource is checked at the shortest interval any of its active watches asks for, but never more often than `MIN_CHECK_INTERVAL_SECONDS` (default 5 minutes).
+- **Job identity.** Jobs are keyed by the platform's job id, or for JSON-LD by `identifier`, then `url`, then title and location. A job whose title, location, department or url changed becomes `JOB_UPDATED` with `changed_fields`. A JSON-LD job without a stable id whose location changed is paired into one `JOB_UPDATED` instead of a remove plus an add.
+- **Change events are written once per resource.** Each watch reads them through its filters, evaluated in SQL against the change's job data (and in JS against the current job list, for `get_watch`): `keywords` (any, case-insensitive, against title, location, department and company), `exclude_keywords`, `locations` (substring of the job's location), `seniority` and `remote_only`. A watch never sees changes from before it was created. Change ids double as cursors, so change-writing transactions are serialized. That keeps ids visible in order, so a slow concurrent check can't commit an id that a reader has already moved past.
+- **Politeness.** At most one fetch is in flight per website across all replicas, using a Postgres host lease with `HOST_MIN_SPACING_MS` between requests; a multi-request check (Workday, iCIMS) holds the lease for all of its requests and pauses briefly between them. Each scheduler tick claims at most one resource per host. Watchtower also:
   - sends `If-None-Match` / `If-Modified-Since` (a 304 means no work);
   - checks robots.txt (cached per origin for an hour, RFC 9309 semantics);
   - sends an identifying User-Agent;
   - backs off exponentially on errors and honors `Retry-After` on 429.
-- **Noise suppression**, so `CONTENT_CHANGED` means something:
-  1. **Main content only.** Scripts, styles, comments, hidden elements, navigation, page headers and footers, sidebars, dialogs and cookie/consent banners are dropped. `<main>` or `<article>` is preferred when it holds most of the text. A CSS `selector` overrides all of this.
-  2. **Token masking.** 40+ character ids and "N minutes ago" are masked. Line diffs are multiset-based, so pure reordering is ignored.
-  3. **Learned volatility.** Each line is reduced to a *signature* (its shape with numbers and calendar words masked). Per resource, Watchtower counts how often each signature changes relative to how many checks it has observed. Lines that change on at least half of all checks (view counters, clocks, rotating "trending" widgets) are suppressed and reported as `suppressed_noise_lines`. A price that changes weekly on an hourly watch changes on under 1% of checks and is always reported. Stats decay, so noise that stops changing stops being suppressed.
-  4. **Confirmation fetch.** When a check finds a change on an HTML page, Watchtower fetches once more and keeps only what both fetches agree on. Lines that flip between the two loads are marked as noise immediately. This costs one extra request per real change, never per check.
-- **Readable diffs.** `CONTENT_CHANGED.data.details` pairs similar removed and added lines into `modified` entries with a word-level diff (`Price: [-$10-]{+$12+}`) and neighbouring context lines.
-- **Structured extraction.**
-  - **JSON-LD:** `JobPosting` and `Event` nodes, including subtypes, `@graph`, `ItemList` and `subEvent`.
-  - **Job-board APIs:** Greenhouse, Lever, Ashby, Workable, SmartRecruiters and Recruitee.
-  - **Feeds:** RSS 2.0 and Atom.
-  - **JSON:** arrays are keyed by `id`/`slug`/`url` when present, so inserting an element doesn't renumber the rest.
-  - **Pairing:** a JSON-LD job whose location changed becomes `JOB_UPDATED`, and an event whose date moved becomes `EVENT_RESCHEDULED`, instead of a remove plus an add.
-  - **Text-date fallback:** only counts dates at least two days out, so "today" in a page header isn't an event, and dates passing into the past aren't reported as removals.
 - **Scheduling and maintenance.** Due resources are claimed with a lease, so you can run several replicas; set `RUN_SCHEDULER=false` on API-only replicas. The same loop delivers webhooks and runs maintenance under an advisory lock. Maintenance:
   - expires unread watches;
   - deletes changes after `CHANGE_RETENTION_DAYS` and non-current snapshots after `SNAPSHOT_RETENTION_DAYS`;
@@ -167,8 +151,8 @@ A watch stays alive as long as someone uses it: `get_changes`, `get_watch`, `lis
 - **Request limits.** A 15 s overall deadline across all hops. At most 5 redirects, each re-validated. A 3 MB body cap enforced on the decompressed bytes, so gzip and brotli bombs are caught. Text-like content types only.
 - **API limits.** Rate limits are stored in Postgres, so they hold across replicas and restarts: 120 requests/min, 10 client creations/hour (shared with MCP auto-provisioning), and 10 forced checks/min. Clients are identified by IPv4 address or IPv6 /64.
 - **Watch and resource caps.**
-  - 10 watches per client, and 5 per client per website.
-  - At most `MAX_RESOURCES_PER_HOST` distinct URLs per website across all clients; job-board platform APIs are exempt, and watching an already-monitored URL is always allowed.
+  - 50 watches per client, and 5 per client per website for arbitrary careers pages (platform boards are separate companies behind one API host and are exempt).
+  - At most `MAX_RESOURCES_PER_HOST` distinct careers-page URLs per website across all clients; job-board platform APIs are exempt, and watching an already-monitored board is always allowed.
   - A global `MAX_ACTIVE_RESOURCES`.
 - **Tokens.** Random 192-bit values; only their SHA-256 is stored. Request bodies are capped at 64 KB.
 - **No bypassing.** Watchtower never works around CAPTCHAs, bot challenges, logins, paywalls or robots.txt. It detects them, tells the caller, logs `host is refusing us`, and counts them in `watchtower_blocked_resources_1h`.
@@ -179,7 +163,6 @@ A watch stays alive as long as someone uses it: `get_changes`, `get_watch`, `lis
 - check outcomes by error code;
 - fetch-duration histogram;
 - changes emitted by type;
-- suppressed noise lines;
 - webhook results;
 - host-busy deferrals;
 - gauges for active watches/resources, failing and blocked resources, and pending webhooks.
@@ -208,8 +191,9 @@ The integration suite drops and recreates the `public` schema of `TEST_DATABASE_
 
 The suite has three parts:
 - Unit tests.
-- Property-based fuzz tests (fast-check) over the HTML, JSON-LD, feed, robots and date parsers and the diff invariants.
-- Integration tests covering REST, MCP, sharing, noise suppression, host leases, concurrent checks, caps, expiry and retention, webhooks, rate limits and metrics.
+- Property-based fuzz tests (fast-check) over the HTML, JSON-LD and robots parsers and the job diff invariants.
+- Source tests for the Workday and iCIMS parsers and pagination, and the remote/seniority classifier.
+- Integration tests covering REST, MCP, sharing, filters, batch creation, page churn, `NO_JOB_DATA`, host leases, concurrent checks, caps, expiry and retention, webhooks, rate limits and metrics.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, all tests against a Postgres service, the build and the demo. It also builds the Docker image and smoke-tests it: migrations, `/health`, `/metrics`, the homepage, and the non-root user.
 
@@ -219,8 +203,8 @@ src/
   config.ts, db.ts          env config; pg pool + migration runner
   security/ssrf.ts          URL validation + connect-time DNS guard
   fetch/                    safeFetch (redirects, limits, decompression), robots.txt
-  extract/                  main-content HTML normalization, JSON-LD, feeds, date fallback, job-board adapters,
-                            volatility learning, diff (word diffs, pairing)
+  extract/                  job-board adapters (incl. Workday, iCIMS), JobPosting JSON-LD, remote/seniority
+                            classifier, job diff (identity, pairing)
   services/                 clients, watches, checker, scheduler (+ maintenance), host leases, rate limits,
                             webhooks, metrics
   mcp/server.ts             MCP tools
@@ -233,5 +217,7 @@ scripts/demo.ts             end-to-end demo
 ## Deliberately out of scope
 
 - Billing, accounts and dashboards.
-- JavaScript rendering. Watchtower only sees server-rendered HTML, JSON and feeds, so pages that build their content client-side show little text. Their JSON-LD often still works.
-- Pagination beyond the first 100 SmartRecruiters postings per company.
+- JavaScript rendering. Careers pages that aren't on a supported platform are only readable if their server-rendered HTML carries `JobPosting` JSON-LD.
+- General page, feed or event monitoring. Watchtower used to do these; it now does job boards only (migration `003_jobs_only.sql` retires existing page and event watches).
+- Pagination beyond the first 100 SmartRecruiters postings or the newest 200 Workday postings per board.
+- Reading each iCIMS job page for details; only the newest ~50 jobs per portal get a real title and location.

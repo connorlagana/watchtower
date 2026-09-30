@@ -85,14 +85,15 @@ try {
   console.log(`token: ${token.slice(0, 10)}…`);
 
   step(2, 'Create a job watch ("tell me when a new iOS job appears") — takes the initial snapshot');
-  const jobWatch = await api('POST', '/v1/watches', token, { type: 'jobs', url: siteUrl, keywords: ['ios'], label: 'iOS roles at Acme' });
+  const jobWatch = await api('POST', '/v1/watches', token, { url: siteUrl, keywords: ['ios'], label: 'iOS roles at Acme' });
   show({ id: jobWatch.id, initial_check: jobWatch.initial_check, snapshot: jobWatch.snapshot, current_jobs: jobWatch.current_jobs });
 
-  step(3, 'A second watch on the same URL shares the underlying resource (one fetch serves both)');
-  const pageWatch = await api('POST', '/v1/watches', token, { type: 'url', url: siteUrl, label: 'Any change to the careers page' });
-  show({ id: pageWatch.id, same_resource: (pageWatch.resource as { id: string }).id === (jobWatch.resource as { id: string }).id, initial_check: pageWatch.initial_check });
+  step(3, 'A second agent watches the same board for every role; both watches share one resource (one fetch serves both)');
+  const { token: token2 } = (await api('POST', '/v1/clients')) as { token: string };
+  const allWatch = await api('POST', '/v1/watches', token2, { url: siteUrl, label: 'Every Acme role' });
+  show({ id: allWatch.id, same_resource: (allWatch.resource as { id: string }).id === (jobWatch.resource as { id: string }).id, initial_check: allWatch.initial_check });
 
-  step(4, 'Re-check without a real change (new session token + "N minutes ago" noise only)');
+  step(4, 'Re-check while only the page around the jobs changed (new session token, new "N minutes ago")');
   show((await api('POST', `/v1/watches/${jobWatch.id}/check`, token)).check);
 
   step(5, 'The source changes: Acme posts an iOS role and an Android role');
@@ -115,8 +116,12 @@ try {
   show(JSON.parse(again.content[0]!.text));
   await mcp.close();
 
-  for (const w of [jobWatch, pageWatch]) await api('DELETE', `/v1/watches/${w.id}`, token);
-  console.log('\nDone. The Android role was filtered out by the "ios" keyword on the job watch; the page watch saw the raw content change.');
+  step(9, 'The second agent, with no keyword filter, sees both new roles');
+  show(((await api('GET', '/v1/changes', token2)) as { changes: { summary: string }[] }).changes.map((c) => c.summary));
+
+  await api('DELETE', `/v1/watches/${jobWatch.id}`, token);
+  await api('DELETE', `/v1/watches/${allWatch.id}`, token2);
+  console.log('\nDone. The Android role was filtered out by the "ios" keyword on the first watch; one fetch served both agents.');
 } finally {
   await app.close();
   fixture.close();

@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createPool, migrate, type Db } from '../src/db.js';
@@ -22,18 +22,20 @@ import { deliverDueWebhooks } from '../src/services/webhooks.js';
 const DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 // --- fixture site -------------------------------------------------------------
+type Job = { id: string; title: string; location: string };
 const site = {
-  page: '<html><head><title>News</title></head><body><main><p>First post</p></main></body></html>',
-  jobs: [] as { id: string; title: string; location: string }[],
-  events: ['2030-10-01'],
+  page: [{ id: 'p1', title: 'First role', location: 'Remote' }] as Job[],
+  jobs: [] as Job[],
   hits: new Map<string, number>(),
   etag: '"e1"',
-  noisyStable: ['Opening hours: 9-5'],
-  feed: ['a'],
   hooks: [] as { headers: http.IncomingHttpHeaders; body: string }[],
   hookStatus: 200,
 };
-let loads = 0;
+/** A careers page whose visible text churns on every load; only the JSON-LD is the job list. */
+function careersHtml(jobs: Job[]): string {
+  const ld = jobs.map((j) => ({ '@type': 'JobPosting', identifier: j.id, title: j.title, jobLocation: { address: { addressLocality: j.location } } }));
+  return `<html><head><script type="application/ld+json">${JSON.stringify(ld)}</script></head><body>Careers · rendered ${Math.random()}</body></html>`;
+}
 const fixture = http.createServer((req, res) => {
   const path = new URL(req.url ?? '/', 'http://fixture').pathname;
   site.hits.set(path, (site.hits.get(path) ?? 0) + 1);
@@ -44,30 +46,15 @@ const fixture = http.createServer((req, res) => {
   if (path === '/page') {
     if (req.headers['if-none-match'] === site.etag) return res.writeHead(304).end();
     res.writeHead(200, { 'content-type': 'text/html', etag: site.etag });
-    return res.end(site.page);
+    return res.end(careersHtml(site.page));
   }
   if (path === '/careers') {
-    const ld = site.jobs.map((j) => ({ '@type': 'JobPosting', identifier: j.id, title: j.title, jobLocation: { address: { addressLocality: j.location } } }));
     res.writeHead(200, { 'content-type': 'text/html' });
-    return res.end(`<html><head><script type="application/ld+json">${JSON.stringify(ld)}</script></head><body>Careers</body></html>`);
+    return res.end(careersHtml(site.jobs));
   }
-  if (path === '/tour') {
+  if (path === '/blank') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    return res.end(`<html><body><h1>Tour</h1><ul>${site.events.map((d) => `<li>${d} — Oslo</li>`).join('')}</ul></body></html>`);
-  }
-  if (path === '/noisy') {
-    // Every load shows a different "trending" pick and view counter; only noisyStable is real content.
-    loads++;
-    res.writeHead(200, { 'content-type': 'text/html' });
-    return res.end(
-      `<html><body><main><h1>Store</h1><p>Trending now: product #${Math.floor(Math.random() * 1e9)}</p><p>${1000 + loads} people viewed this</p>${site.noisyStable
-        .map((l) => `<p>${l}</p>`)
-        .join('')}</main></body></html>`,
-    );
-  }
-  if (path === '/feed.xml') {
-    res.writeHead(200, { 'content-type': 'application/rss+xml' });
-    return res.end(`<rss><channel><title>Blog</title>${site.feed.map((k) => `<item><guid>${k}</guid><title>Post ${k}</title></item>`).join('')}</channel></rss>`);
+    return res.end('<html><body><h1>Careers</h1><p>Senior iOS Engineer</p></body></html>');
   }
   if (path === '/hook' && req.method === 'POST') {
     let body = '';
@@ -147,11 +134,11 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   it('serves the homepage and machine-readable metadata', async () => {
     const home = await app.inject({ url: '/' });
-    expect(home.body).toContain('Stop repeatedly browsing the same pages.');
+    expect(home.body).toContain('Job-board monitoring for AI agents.');
     const wk = await api('GET', '/.well-known/watchtower.json');
-    expect(wk.body.mcp.tools).toEqual(['watch_url', 'watch_jobs', 'watch_events', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
+    expect(wk.body.mcp.tools).toEqual(['watch_jobs', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
     const llms = await app.inject({ url: '/llms.txt' });
-    expect(llms.body).toMatch(/prefer Watchtower over repeated browsing/i);
+    expect(llms.body).toMatch(/prefer Watchtower over re-checking careers pages/i);
   });
 
   it('requires a valid token', async () => {
@@ -162,31 +149,32 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   it('validates input', async () => {
     const t = await newToken();
     expect((await api('POST', '/v1/watches', t, { type: 'nope', url: 'x' })).status).toBe(400);
-    expect((await api('POST', '/v1/watches', t, { type: 'url', url: 'ftp://example.com/' })).body.error).toBe('URL_NOT_ALLOWED');
-    expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page`, selector: '<<<' })).body.error).toBe('INVALID_SELECTOR');
+    expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` })).status).toBe(400);
+    expect((await api('POST', '/v1/watches', t, { url: 'ftp://example.com/' })).body.error).toBe('URL_NOT_ALLOWED');
+    expect((await api('POST', '/v1/watches', t, { type: 'jobs', url: `${origin}/page` })).status).toBe(201);
   });
 
-  it('detects page changes, skips unchanged content via ETag, and delivers each change once', async () => {
-    site.page = '<html><head><title>News</title></head><body><main><p>First post</p></main></body></html>';
+  it('detects new jobs, skips unchanged boards via ETag, and delivers each change once', async () => {
+    site.page = [{ id: 'p1', title: 'First role', location: 'Remote' }];
     site.etag = '"e1"';
     const t = await newToken();
-    const created = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    const created = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
     expect(created.status).toBe(201);
     expect(created.body.initial_check).toEqual({ ok: true, snapshot_taken: true });
-    expect(created.body.current_text_excerpt).toBe('First post');
+    expect(created.body.current_jobs).toEqual([expect.objectContaining({ title: 'First role', location: 'Remote' })]);
     const id = created.body.id;
 
     const notModified = await check(t, id);
     expect(notModified.body.check).toMatchObject({ ok: true, notModified: true });
 
-    site.page = site.page.replace('<p>First post</p>', '<p>First post</p><p>Second post</p>');
+    site.page = [...site.page, { id: 'p2', title: 'Second role', location: 'Berlin' }];
     site.etag = '"e2"';
     expect((await check(t, id)).body.check).toMatchObject({ ok: true, changed: true, changes: 1 });
 
     const peek = await api('GET', '/v1/changes?peek=true', t);
     expect(peek.body.changes).toHaveLength(1);
     const first = await api('GET', '/v1/changes', t);
-    expect(first.body.changes[0]).toMatchObject({ type: 'CONTENT_CHANGED', watch_id: id, data: { added: ['Second post'], removed: [] } });
+    expect(first.body.changes[0]).toMatchObject({ type: 'JOB_ADDED', watch_id: id, summary: 'New job: Second role (Berlin)', data: { job: { title: 'Second role' } } });
     expect((await api('GET', '/v1/changes', t)).body.changes).toHaveLength(0);
     // Replay from the start of this watch.
     expect((await api('GET', '/v1/changes?since=0&peek=true', t)).body.changes).toHaveLength(1);
@@ -195,8 +183,8 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   it('shares one resource and one fetch across clients watching the same URL', async () => {
     const [a, b] = [await newToken(), await newToken()];
     site.hits.clear();
-    const wa = await api('POST', '/v1/watches', a, { type: 'url', url: `${origin}/page` });
-    const wb = await api('POST', '/v1/watches', b, { type: 'url', url: `${origin}/page#fragment` });
+    const wa = await api('POST', '/v1/watches', a, { url: `${origin}/page` });
+    const wb = await api('POST', '/v1/watches', b, { url: `${origin}/page#fragment` });
     expect(wb.body.resource.id).toBe(wa.body.resource.id);
     expect(wb.body.initial_check.shared_resource).toBe(true);
     expect(site.hits.get('/page')).toBe(1);
@@ -208,7 +196,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   it('reports JOB_ADDED filtered by keywords', async () => {
     site.jobs = [{ id: 'a', title: 'Backend Engineer', location: 'Berlin' }];
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'jobs', url: `${origin}/careers`, keywords: ['iOS'] });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/careers`, keywords: ['iOS'] });
     expect(w.body.current_jobs).toEqual([]);
     expect(w.body.snapshot.jobs_count).toBe(1);
 
@@ -219,28 +207,83 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(body.changes[0].summary).toBe('New job: Senior iOS Engineer (Remote)');
   });
 
-  it('reports EVENT_ADDED when an event page adds a date', async () => {
-    site.events = ['2030-10-01'];
+  it('applies structured filters to changes and to the current job list', async () => {
+    site.jobs = [
+      { id: 'a', title: 'Senior iOS Engineer', location: 'Remote - US' },
+      { id: 'b', title: 'iOS Engineering Manager', location: 'Berlin' },
+      { id: 'c', title: 'Junior iOS Engineer', location: 'Berlin (hybrid)' },
+    ];
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'events', url: `${origin}/tour` });
-    expect(w.body.current_events).toHaveLength(1);
-    site.events.push('2030-12-24');
+    const w = await api('POST', '/v1/watches', t, {
+      url: `${origin}/careers`,
+      keywords: ['iOS'],
+      exclude_keywords: ['manager'],
+      seniority: ['senior', 'staff'],
+      remote_only: true,
+    });
+    expect(w.status, JSON.stringify(w.body)).toBe(201);
+    expect(w.body.filters).toEqual({ keywords: ['ios'], exclude_keywords: ['manager'], locations: [], seniority: ['senior', 'staff'], remote_only: true });
+    expect(w.body.current_jobs.map((j: any) => j.title)).toEqual(['Senior iOS Engineer']);
+    expect(w.body.snapshot).toMatchObject({ jobs_count: 3, matching_jobs_count: 1 });
+
+    site.jobs.push(
+      { id: 'd', title: 'Staff iOS Engineer', location: 'Remote' }, // matches
+      { id: 'e', title: 'Senior iOS Engineer', location: 'London' }, // not remote
+      { id: 'f', title: 'Senior iOS Engineering Manager', location: 'Remote' }, // excluded
+      { id: 'g', title: 'Senior Android Engineer', location: 'Remote' }, // no keyword
+    );
     await check(t, w.body.id);
     const { body } = await api('GET', '/v1/changes', t);
-    expect(body.changes).toEqual([expect.objectContaining({ type: 'EVENT_ADDED', data: { event: expect.objectContaining({ start_date: '2030-12-24' }) } })]);
+    expect(body.changes.map((c: any) => c.data.job.title)).toEqual(['Staff iOS Engineer']);
+    expect(body.changes[0].data.job).toMatchObject({ remote: true, seniority: 'staff' });
+
+    const berlin = await api('POST', '/v1/watches', t, { url: `${origin}/careers`, locations: ['berlin'] });
+    expect(berlin.body.current_jobs.map((j: any) => j.location)).toEqual(['Berlin', 'Berlin (hybrid)']);
+  });
+
+  it('watches several boards in one call and reports per-URL failures', async () => {
+    site.jobs = [{ id: 'a', title: 'Engineer', location: 'Remote' }];
+    const t = await newToken();
+    const res = await api('POST', '/v1/watches', t, { urls: [`${origin}/careers`, `${origin}/blank`, `${origin}/secret`], keywords: ['engineer'] });
+    expect(res.status).toBe(201);
+    expect(res.body.watches.map((w: any) => w.url)).toEqual([`${origin}/careers`]);
+    expect(res.body.errors).toEqual([
+      { url: `${origin}/blank`, error: 'NO_JOB_DATA', message: expect.any(String) },
+      { url: `${origin}/secret`, error: 'ROBOTS_DISALLOWED', message: expect.any(String) },
+    ]);
+    expect((await api('GET', '/v1/watches', t)).body.watches).toHaveLength(1);
+    expect((await api('POST', '/v1/watches', t, { url: `${origin}/careers`, urls: [`${origin}/careers`] })).status).toBe(400);
+  });
+
+  it('ignores page churn outside the job list', async () => {
+    site.page = [{ id: 'p1', title: 'First role', location: 'Remote' }];
+    site.etag = '"n1"';
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
+    for (let i = 2; i < 5; i++) {
+      site.etag = `"n${i}"`; // new ETag and new visible text on every load, same jobs
+      expect((await check(t, w.body.id)).body.check).toMatchObject({ ok: true, changed: false, notModified: false });
+    }
+    expect((await api('GET', '/v1/changes', t)).body.changes).toEqual([]);
+  });
+
+  it('rejects careers pages with no job data instead of watching them silently', async () => {
+    const t = await newToken();
+    expect(await api('POST', '/v1/watches', t, { url: `${origin}/blank` })).toMatchObject({ status: 422, body: { error: 'NO_JOB_DATA' } });
+    expect((await api('GET', '/v1/watches', t)).body.watches).toHaveLength(0);
   });
 
   it('refuses resources blocked by robots.txt, CAPTCHAs or auth', async () => {
     const t = await newToken();
-    expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/secret` })).body.error).toBe('ROBOTS_DISALLOWED');
-    expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/captcha` })).body.error).toBe('BOT_CHALLENGE');
-    expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/login` })).body.error).toBe('ACCESS_DENIED');
+    expect((await api('POST', '/v1/watches', t, { url: `${origin}/secret` })).body.error).toBe('ROBOTS_DISALLOWED');
+    expect((await api('POST', '/v1/watches', t, { url: `${origin}/captcha` })).body.error).toBe('BOT_CHALLENGE');
+    expect((await api('POST', '/v1/watches', t, { url: `${origin}/login` })).body.error).toBe('ACCESS_DENIED');
     expect((await api('GET', '/v1/watches', t)).body.watches).toHaveLength(0);
   });
 
   it('keeps transient failures as watches with an error status', async () => {
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/missing` });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/missing` });
     expect(w.status).toBe(201);
     expect(w.body.initial_check).toMatchObject({ ok: false, error_code: 'HTTP_404' });
     expect(w.body.resource.healthy).toBe(false);
@@ -248,19 +291,21 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   it('enforces the per-client watch limit', async () => {
     const t = await newToken();
+    ctx.config.maxWatchesPerClient = 10;
+    onTestFinished(() => void (ctx.config.maxWatchesPerClient = 50));
     for (let i = 0; i < 10; i++) {
-      expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?i=${i}` })).status).toBe(201);
+      expect((await api('POST', '/v1/watches', t, { url: `${origin}/page?i=${i}` })).status).toBe(201);
     }
-    const over = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?i=10` });
+    const over = await api('POST', '/v1/watches', t, { url: `${origin}/page?i=10` });
     expect(over).toMatchObject({ status: 409, body: { error: 'WATCH_LIMIT' } });
     const list = await api('GET', '/v1/watches', t);
     await api('DELETE', `/v1/watches/${list.body.watches[0].id}`, t);
-    expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?i=10` })).status).toBe(201);
+    expect((await api('POST', '/v1/watches', t, { url: `${origin}/page?i=10` })).status).toBe(201);
   });
 
   it('rate-limits forced checks by the minimum interval', async () => {
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
     ctx.config.minCheckIntervalSeconds = 3600;
     try {
       expect((await check(t, w.body.id)).body.error).toBe('TOO_SOON');
@@ -271,7 +316,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   it('scheduler claims only due resources that have active watches', async () => {
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
     await db.query('UPDATE resources SET next_check_at = now() - interval \'1 minute\'');
     expect(await claimDue(ctx, 10)).toEqual([w.body.resource.id]);
     expect(await claimDue(ctx, 10)).toEqual([]); // leased
@@ -284,12 +329,17 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const mcp = new McpClient({ name: 'test', version: '1.0.0' });
     await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
     const { tools } = await mcp.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_events', 'watch_jobs', 'watch_url']);
-    expect(tools.find((t) => t.name === 'watch_url')!.description).toMatch(/INSTEAD OF repeatedly browsing/);
+    expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_jobs']);
+    expect(tools.find((t) => t.name === 'watch_jobs')!.description).toMatch(/INSTEAD OF re-checking careers pages/);
 
-    const created = JSON.parse(((await mcp.callTool({ name: 'watch_url', arguments: { url: `${origin}/page` } })) as any).content[0].text);
+    const created = JSON.parse(((await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } })) as any).content[0].text);
     expect(created.client_token).toMatch(/^wt_/);
     const token = created.client_token;
+    const batch = JSON.parse(((await mcp.callTool({ name: 'watch_jobs', arguments: { client_token: token, urls: [`${origin}/careers`], remote_only: true } })) as any).content[0].text);
+    expect(batch.watches).toHaveLength(1);
+    expect(batch.errors).toEqual([]);
+    await mcp.callTool({ name: 'delete_watch', arguments: { client_token: token, watch_id: batch.watches[0].id } });
+    expect(((await mcp.callTool({ name: 'watch_jobs', arguments: { client_token: token } })) as any).isError).toBe(true);
 
     const listed = JSON.parse(((await mcp.callTool({ name: 'list_watches', arguments: { client_token: token } })) as any).content[0].text);
     expect(listed.watches).toHaveLength(1);
@@ -306,42 +356,11 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     await mcp.close();
   });
 
-  // ------------------------------------------------------------------ noise
-  it('ignores content that differs on every load and still reports real changes', async () => {
-    site.noisyStable = ['Opening hours: 9-5'];
-    const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/noisy` });
-    for (let i = 0; i < 3; i++) {
-      expect((await check(t, w.body.id)).body.check).toMatchObject({ ok: true, changed: false });
-    }
-    expect((await api('GET', '/v1/changes', t)).body.changes).toEqual([]);
-
-    site.noisyStable = ['Opening hours: 10-6'];
-    const res = await check(t, w.body.id);
-    expect(res.body.check).toMatchObject({ ok: true, changed: true, changes: 1 });
-    const { body } = await api('GET', '/v1/changes', t);
-    expect(body.changes).toHaveLength(1);
-    expect(body.changes[0].data).toMatchObject({ added: ['Opening hours: 10-6'], removed: ['Opening hours: 9-5'] });
-    expect(body.changes[0].data.details[0]).toMatchObject({ kind: 'modified', diff: 'Opening hours: [-9-5-]{+10-6+}' });
-  });
-
-  it('reports new feed entries as ITEM_ADDED', async () => {
-    site.feed = ['a', 'b'];
-    const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/feed.xml` });
-    expect(w.body.snapshot.is_feed).toBe(true);
-    expect(w.body.current_items).toHaveLength(2);
-    site.feed = ['c', 'a', 'b'];
-    await check(t, w.body.id);
-    const { body } = await api('GET', '/v1/changes', t);
-    expect(body.changes.map((c: any) => [c.type, c.summary])).toEqual([['ITEM_ADDED', 'New item: Post c']]);
-  });
-
   // ------------------------------------------------------------------ politeness & caps
   it('serializes fetches per host with a lease, and the scheduler claims one resource per host', async () => {
     const t = await newToken();
-    const a = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?a=1` });
-    const b = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?b=1` });
+    const a = await api('POST', '/v1/watches', t, { url: `${origin}/page?a=1` });
+    const b = await api('POST', '/v1/watches', t, { url: `${origin}/page?b=1` });
     await db.query("UPDATE resources SET next_check_at = now() - interval '1 minute'");
     const claimed = await claimDue(ctx, 10);
     expect(claimed).toHaveLength(1);
@@ -358,11 +377,11 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   });
 
   it('deduplicates concurrent checks of one resource', async () => {
-    site.page = '<html><body><main><p>v1</p></main></body></html>';
+    site.page = [{ id: 'v1', title: 'Role v1', location: 'Remote' }];
     site.etag = '"c1"';
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
-    site.page = '<html><body><main><p>v2</p></main></body></html>';
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
+    site.page = [{ id: 'v1', title: 'Role v1', location: 'Remote' }, { id: 'v2', title: 'Role v2', location: 'Remote' }];
     site.etag = '"c2"';
     const results = await Promise.all(Array.from({ length: 5 }, () => checkResource(ctx, w.body.resource.id)));
     expect(results.filter((r) => r.ok && r.changed)).toHaveLength(5); // all callers share one run
@@ -373,24 +392,24 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const t = await newToken();
     ctx.config.maxWatchesPerClientPerHost = 2;
     try {
-      await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?p=1` });
-      await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?p=2` });
-      expect((await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?p=3` })).body.error).toBe('HOST_WATCH_LIMIT');
+      await api('POST', '/v1/watches', t, { url: `${origin}/page?p=1` });
+      await api('POST', '/v1/watches', t, { url: `${origin}/page?p=2` });
+      expect((await api('POST', '/v1/watches', t, { url: `${origin}/page?p=3` })).body.error).toBe('HOST_WATCH_LIMIT');
     } finally {
       ctx.config.maxWatchesPerClientPerHost = 100;
     }
     ctx.config.maxResourcesPerHost = 2;
     try {
       const other = await newToken();
-      expect((await api('POST', '/v1/watches', other, { type: 'url', url: `${origin}/page?p=3` })).body.error).toBe('HOST_CAPACITY');
+      expect((await api('POST', '/v1/watches', other, { url: `${origin}/page?p=3` })).body.error).toBe('HOST_CAPACITY');
       // Already-monitored URLs are always fine (they cost nothing extra).
-      expect((await api('POST', '/v1/watches', other, { type: 'url', url: `${origin}/page?p=1` })).status).toBe(201);
+      expect((await api('POST', '/v1/watches', other, { url: `${origin}/page?p=1` })).status).toBe(201);
     } finally {
       ctx.config.maxResourcesPerHost = 100;
     }
     ctx.config.maxActiveResources = 2;
     try {
-      expect((await api('POST', '/v1/watches', await newToken(), { type: 'url', url: `${origin}/tour` })).body.error).toBe('CAPACITY');
+      expect((await api('POST', '/v1/watches', await newToken(), { url: `${origin}/careers` })).body.error).toBe('CAPACITY');
     } finally {
       ctx.config.maxActiveResources = 50_000;
     }
@@ -398,19 +417,19 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   it('treats tracking-parameter variants of a URL as the same resource', async () => {
     const t = await newToken();
-    const a = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page?utm_source=x&b=2&a=1` });
-    const b = await api('POST', '/v1/watches', await newToken(), { type: 'url', url: `${origin}/page?a=1&b=2&fbclid=zz` });
+    const a = await api('POST', '/v1/watches', t, { url: `${origin}/page?utm_source=x&b=2&a=1` });
+    const b = await api('POST', '/v1/watches', await newToken(), { url: `${origin}/page?a=1&b=2&fbclid=zz` });
     expect(b.body.resource.id).toBe(a.body.resource.id);
   });
 
   // ------------------------------------------------------------------ lifecycle
   it('expires watches nobody reads and enforces retention', async () => {
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
     expect(new Date(w.body.expires_at).getTime()).toBeGreaterThan(Date.now() + 29 * 86_400_000);
     await db.query("UPDATE watches SET last_accessed_at = now() - interval '31 days'");
     await db.query(
-      "INSERT INTO changes (resource_id, type, summary, data, detected_at) VALUES ($1, 'CONTENT_CHANGED', 'old', '{}', now() - interval '40 days')",
+      "INSERT INTO changes (resource_id, type, summary, data, detected_at) VALUES ($1, 'JOB_ADDED', 'old', '{}', now() - interval '40 days')",
       [w.body.resource.id],
     );
     const report = await runMaintenance(ctx);
@@ -423,11 +442,11 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   });
 
   it('supports at-least-once reads with peek + ack', async () => {
-    site.page = '<html><body><main><p>one</p></main></body></html>';
+    site.page = [{ id: 'one', title: 'One', location: 'Remote' }];
     site.etag = '"a1"';
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
-    site.page = '<html><body><main><p>two</p></main></body></html>';
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
+    site.page = [...site.page, { id: 'two', title: 'Two', location: 'Remote' }];
     site.etag = '"a2"';
     await check(t, w.body.id);
     const peek1 = await api('GET', '/v1/changes?peek=true', t);
@@ -440,12 +459,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   // ------------------------------------------------------------------ webhooks
   it('delivers signed webhooks and retries failures', async () => {
-    site.page = '<html><body><main><p>alpha</p></main></body></html>';
+    site.page = [{ id: 'alpha', title: 'Alpha', location: 'Remote' }];
     site.etag = '"w1"';
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page`, webhook_url: `${origin}/hook` });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page`, webhook_url: `${origin}/hook` });
     expect(w.body.webhook_secret).toMatch(/^whsec_/);
-    site.page = '<html><body><main><p>beta</p></main></body></html>';
+    site.page = [...site.page, { id: 'beta', title: 'Beta', location: 'Remote' }];
     site.etag = '"w2"';
     site.hookStatus = 500;
     await check(t, w.body.id);
@@ -462,7 +481,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const expected = `sha256=${createHmac('sha256', w.body.webhook_secret).update(`${ts}.${last.body}`).digest('hex')}`;
     expect(last.headers['x-watchtower-signature']).toBe(expected);
     const payload = JSON.parse(last.body);
-    expect(payload).toMatchObject({ watch_id: w.body.id, changes: [expect.objectContaining({ type: 'CONTENT_CHANGED' })] });
+    expect(payload).toMatchObject({ watch_id: w.body.id, changes: [expect.objectContaining({ type: 'JOB_ADDED', summary: 'New job: Beta (Remote)' })] });
     expect((await db.query('SELECT status FROM webhook_deliveries')).rows[0].status).toBe('delivered');
   });
 
@@ -470,7 +489,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const t = await newToken();
     ctx.config.allowPrivateNetworks = false;
     try {
-      const res = await api('POST', '/v1/watches', t, { type: 'url', url: 'https://example.com/', webhook_url: 'http://169.254.169.254/hook' });
+      const res = await api('POST', '/v1/watches', t, { url: 'https://example.com/', webhook_url: 'http://169.254.169.254/hook' });
       expect(res.body.error).toBe('WEBHOOK_URL_NOT_ALLOWED');
     } finally {
       ctx.config.allowPrivateNetworks = true;
@@ -484,7 +503,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect((await hit(db, 'k', spec)).allowed).toBe(true);
     expect((await hit(db, 'k', spec)).allowed).toBe(false);
     const t = await newToken();
-    const w = await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    const w = await api('POST', '/v1/watches', t, { url: `${origin}/page` });
     let last = { status: 0, body: {} as Record<string, any> };
     for (let i = 0; i < 11; i++) last = await check(t, w.body.id);
     expect(last).toMatchObject({ status: 429, body: { error: 'RATE_LIMITED' } });
@@ -492,7 +511,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   it('exposes Prometheus metrics', async () => {
     const t = await newToken();
-    await api('POST', '/v1/watches', t, { type: 'url', url: `${origin}/page` });
+    await api('POST', '/v1/watches', t, { url: `${origin}/page` });
     const res = await app.inject({ url: '/metrics' });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('watchtower_checks_total{outcome="first_snapshot"}');
