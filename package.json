@@ -1,7 +1,7 @@
 {
   "name": "watchtower",
   "version": "0.1.0",
-  "description": "Free job-board monitoring for AI agents: watch a company's openings once and get only new, removed and changed postings.",
+  "description": "Free tech job monitoring for AI agents: say what you are looking for once and get only the new postings that match, from the job boards of tech companies and startups.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -17,7 +17,8 @@
     "migrate:prod": "node dist/migrate.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "demo": "tsx scripts/demo.ts"
+    "demo": "tsx scripts/demo.ts",
+    "discover": "tsx scripts/discover-boards.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",

@@ -16,16 +16,18 @@ import { checkResource } from '../src/services/checker.js';
 import type { Ctx } from '../src/services/context.js';
 import { releaseHost, tryAcquireHost } from '../src/services/hostLease.js';
 import { hit } from '../src/services/rateLimit.js';
+import { promoteToDirectory, syncBoardIndex } from '../src/services/boardIndex.js';
 import { claimDue, runMaintenance } from '../src/services/scheduler.js';
 import { deliverDueWebhooks } from '../src/services/webhooks.js';
 
 const DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 // --- fixture site -------------------------------------------------------------
-type Job = { id: string; title: string; location: string };
+type Job = { id: string; title: string; location: string; description?: string; salary?: [number, number] };
 const site = {
   page: [{ id: 'p1', title: 'First role', location: 'Remote' }] as Job[],
   jobs: [] as Job[],
+  board2: [] as Job[],
   hits: new Map<string, number>(),
   etag: '"e1"',
   hooks: [] as { headers: http.IncomingHttpHeaders; body: string }[],
@@ -33,7 +35,14 @@ const site = {
 };
 /** A careers page whose visible text churns on every load; only the JSON-LD is the job list. */
 function careersHtml(jobs: Job[]): string {
-  const ld = jobs.map((j) => ({ '@type': 'JobPosting', identifier: j.id, title: j.title, jobLocation: { address: { addressLocality: j.location } } }));
+  const ld = jobs.map((j) => ({
+    '@type': 'JobPosting',
+    identifier: j.id,
+    title: j.title,
+    jobLocation: { address: { addressLocality: j.location } },
+    ...(j.description ? { description: j.description } : {}),
+    ...(j.salary ? { baseSalary: { '@type': 'MonetaryAmount', currency: 'USD', value: { '@type': 'QuantitativeValue', minValue: j.salary[0], maxValue: j.salary[1], unitText: 'YEAR' } } } : {}),
+  }));
   return `<html><head><script type="application/ld+json">${JSON.stringify(ld)}</script></head><body>Careers · rendered ${Math.random()}</body></html>`;
 }
 const fixture = http.createServer((req, res) => {
@@ -51,6 +60,10 @@ const fixture = http.createServer((req, res) => {
   if (path === '/careers') {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(careersHtml(site.jobs));
+  }
+  if (path === '/board2') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(careersHtml(site.board2));
   }
   if (path === '/blank') {
     res.writeHead(200, { 'content-type': 'text/html' });
@@ -134,11 +147,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
 
   it('serves the homepage and machine-readable metadata', async () => {
     const home = await app.inject({ url: '/' });
-    expect(home.body).toContain('Job-board monitoring for AI agents.');
+    expect(home.body).toContain('Tech job monitoring for AI agents.');
     const wk = await api('GET', '/.well-known/watchtower.json');
     expect(wk.body.mcp.tools).toEqual(['watch_jobs', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
     const llms = await app.inject({ url: '/llms.txt' });
-    expect(llms.body).toMatch(/prefer Watchtower over re-checking careers pages/i);
+    expect(llms.body).toMatch(/prefer Watchtower over re-running job searches or re-checking careers pages/i);
+    expect(llms.body).toContain('## Search watches (no URL)');
   });
 
   it('requires a valid token', async () => {
@@ -222,7 +236,18 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
       remote_only: true,
     });
     expect(w.status, JSON.stringify(w.body)).toBe(201);
-    expect(w.body.filters).toEqual({ keywords: ['ios'], exclude_keywords: ['manager'], locations: [], seniority: ['senior', 'staff'], remote_only: true });
+    expect(w.body.filters).toEqual({
+      keywords: ['ios'],
+      all_keywords: [],
+      exclude_keywords: ['manager'],
+      locations: [],
+      seniority: ['senior', 'staff'],
+      remote_only: true,
+      min_salary: null,
+      salary_currency: null,
+      max_experience_years: null,
+      include_unknown: true,
+    });
     expect(w.body.current_jobs.map((j: any) => j.title)).toEqual(['Senior iOS Engineer']);
     expect(w.body.snapshot).toMatchObject({ jobs_count: 3, matching_jobs_count: 1 });
 
@@ -330,7 +355,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
     const { tools } = await mcp.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_jobs']);
-    expect(tools.find((t) => t.name === 'watch_jobs')!.description).toMatch(/INSTEAD OF re-checking careers pages/);
+    expect(tools.find((t) => t.name === 'watch_jobs')!.description).toMatch(/INSTEAD OF re-running job searches or re-checking careers pages/);
 
     const created = JSON.parse(((await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } })) as any).content[0].text);
     expect(created.client_token).toMatch(/^wt_/);
@@ -353,6 +378,189 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(changes).toMatchObject({ changes: [], has_more: false });
     const del = JSON.parse(((await mcp.callTool({ name: 'delete_watch', arguments: { client_token: token, watch_id: created.watch.id } })) as any).content[0].text);
     expect(del.deleted).toBe(true);
+    await mcp.close();
+  });
+
+  // ------------------------------------------------------------------ search watches (no URL)
+  const QUERY = 'iOS jobs in Austin making at least 150k a year with a maximum of 6 years of experience';
+  /** Check every monitored board, the way the scheduler would. */
+  const checkAll = async () => {
+    const { rows } = await db.query<{ id: string }>('SELECT id FROM resources ORDER BY url');
+    for (const r of rows) expect((await checkResource(ctx, r.id, { waitForHost: true })).ok).toBe(true);
+  };
+  const titles = (changes: any[]) => changes.map((c) => c.data.job.title).sort();
+
+  it('watches a plain-language request across every monitored board, with no URL', async () => {
+    site.jobs = [
+      { id: 'a1', title: 'iOS Engineer', location: 'Austin', salary: [160_000, 190_000], description: 'You have 4+ years of experience building iOS apps.' },
+      { id: 'a2', title: 'Android Engineer', location: 'Austin', salary: [160_000, 190_000] },
+    ];
+    site.board2 = [{ id: 'b1', title: 'Producer, Game Studios', location: 'Austin' }];
+    expect(await syncBoardIndex(ctx, [`${origin}/careers`, `${origin}/board2`])).toMatchObject({ indexed: 2, added: 2, removed: 0 });
+    // Directory boards are due without anyone watching them.
+    expect(await claimDue(ctx, 10)).toHaveLength(1); // one per host per tick
+    await checkAll();
+
+    const t = await newToken();
+    const w = await api('POST', '/v1/watches', t, { query: QUERY });
+    expect(w.status, JSON.stringify(w.body)).toBe(201);
+    expect(w.body).toMatchObject({ scope: 'all_boards', url: null, query: QUERY, change_types: ['JOB_ADDED'], resource: null, coverage: { boards: 2 } });
+    expect(w.body.interpreted.filters).toMatchObject({ keywords: ['ios'], locations: ['austin'], min_salary: 150_000, max_experience_years: 6, include_unknown: true });
+    expect(w.body.filters).toEqual(w.body.interpreted.filters);
+    // The jobs open right now that match, as a baseline. "Studios" does not match "ios".
+    expect(w.body.current_jobs.map((j: any) => j.title)).toEqual(['iOS Engineer']);
+    expect(w.body.current_jobs[0]).toMatchObject({ salary: { min: 160_000, max: 190_000, currency: 'USD', annual_max: 190_000 }, experience_years: 4 });
+    expect(w.body.matching_jobs_count).toBe(1);
+    expect((await api('GET', '/v1/changes', t)).body.changes).toEqual([]);
+
+    site.jobs.push(
+      { id: 'a3', title: 'Senior iOS Engineer', location: 'Austin, TX', salary: [170_000, 210_000], description: 'Requirements: 5+ years of experience shipping iOS apps.' }, // matches
+      { id: 'a4', title: 'iOS Engineer II', location: 'Austin', description: 'The salary range for this role is $95,000 - $120,000 per year.' }, // pays too little
+      { id: 'a5', title: 'Principal iOS Engineer', location: 'Austin', salary: [220_000, 280_000], description: '10+ years of experience in mobile engineering.' }, // asks for too much
+      { id: 'a6', title: 'Senior iOS Engineer', location: 'Denver', salary: [170_000, 210_000] }, // elsewhere
+    );
+    site.board2.push(
+      { id: 'b2', title: 'iOS Developer', location: 'Austin' }, // states neither pay nor experience: still reported
+      { id: 'b3', title: 'Staff iOS Engineer', location: 'Austin, Texas', description: 'Pay: $180K–$240K. 3-6 years of experience in Swift.' }, // matches, from the text
+      { id: 'b4', title: 'Audio Engineer, Game Studios', location: 'Austin', salary: [170_000, 210_000] }, // not an iOS job
+    );
+    site.jobs = site.jobs.filter((j) => j.id !== 'a1'); // a removal is not a new posting
+    await checkAll();
+
+    const { body } = await api('GET', '/v1/changes', t);
+    expect(body.changes.every((c: any) => c.type === 'JOB_ADDED' && c.watch_id === w.body.id && c.url === null)).toBe(true);
+    expect(titles(body.changes)).toEqual(['Senior iOS Engineer', 'Staff iOS Engineer', 'iOS Developer']);
+    const staff = body.changes.find((c: any) => c.data.job.title === 'Staff iOS Engineer').data.job;
+    expect(staff).toMatchObject({ salary: { min: 180_000, max: 240_000, period: 'year' }, experience_years: 3 });
+    expect(body.changes.find((c: any) => c.data.job.title === 'iOS Developer').data.job.salary).toBeUndefined();
+    expect((await api('GET', '/v1/changes', t)).body.changes).toEqual([]);
+
+    const listed = await api('GET', '/v1/watches', t);
+    expect(listed.body.watches).toHaveLength(1);
+    expect(listed.body.watches[0]).toMatchObject({ id: w.body.id, scope: 'all_boards', pending_changes: 0 });
+    const got = await api('GET', `/v1/watches/${w.body.id}`, t);
+    expect(got.body.current_jobs.map((j: any) => j.title).sort()).toEqual(['Senior iOS Engineer', 'Staff iOS Engineer', 'iOS Developer']);
+    expect((await check(t, w.body.id)).body.error).toBe('NOT_SUPPORTED');
+    expect((await api('DELETE', `/v1/watches/${w.body.id}`, t)).body.deleted).toBe(true);
+  });
+
+  it('lets explicit filters override the query, and can require stated pay and experience', async () => {
+    site.jobs = [{ id: 'a1', title: 'Backend Engineer', location: 'Berlin' }];
+    await syncBoardIndex(ctx, [`${origin}/careers`]);
+    await checkAll();
+    const t = await newToken();
+    const strict = await api('POST', '/v1/watches', t, { query: QUERY, include_unknown: false });
+    const loose = await api('POST', '/v1/watches', t, { query: QUERY, locations: ['Dallas'], min_salary: 100_000 });
+    expect(loose.body.filters).toMatchObject({ keywords: ['ios'], locations: ['dallas'], min_salary: 100_000, max_experience_years: 6 });
+
+    site.jobs.push(
+      { id: 'a2', title: 'iOS Engineer', location: 'Austin' }, // nothing stated
+      { id: 'a3', title: 'iOS Engineer', location: 'Austin', salary: [150_000, 180_000], description: '2+ years of experience.' },
+      { id: 'a4', title: 'iOS Engineer', location: 'Dallas', salary: [100_000, 120_000], description: '2+ years of experience.' },
+    );
+    await checkAll();
+    const forStrict = (await api('GET', `/v1/changes?watch_id=${strict.body.id}`, t)).body.changes;
+    expect(forStrict.map((c: any) => c.data.job.url ?? c.data.job.key)).toEqual(['job:a3']);
+    const forLoose = (await api('GET', `/v1/changes?watch_id=${loose.body.id}`, t)).body.changes;
+    expect(forLoose.map((c: any) => c.data.job.key)).toEqual(['job:a4']);
+  });
+
+  it('covers boards that someone watches by URL, and needs at least one filter', async () => {
+    site.jobs = [{ id: 'a1', title: 'Backend Engineer', location: 'Berlin' }];
+    const other = await newToken();
+    await api('POST', '/v1/watches', other, { url: `${origin}/careers` }); // not in the directory
+    const t = await newToken();
+    expect((await api('POST', '/v1/watches', t, {})).body.error).toBe('QUERY_TOO_BROAD');
+    expect((await api('POST', '/v1/watches', t, { query: 'jobs' })).body.error).toBe('QUERY_TOO_BROAD');
+    const w = await api('POST', '/v1/watches', t, { keywords: ['backend'], remote_only: true, webhook_url: `${origin}/hook` });
+    expect(w.body).toMatchObject({ scope: 'all_boards', coverage: { boards: 1 }, current_jobs: [] });
+    expect(w.body.webhook_secret).toMatch(/^whsec_/);
+    expect(w.body.interpreted).toBeUndefined();
+
+    site.jobs.push({ id: 'a2', title: 'Backend Engineer', location: 'Remote' }, { id: 'a3', title: 'Backend Engineer', location: 'Paris' });
+    await checkAll();
+    expect(titles((await api('GET', '/v1/changes', t)).body.changes)).toEqual(['Backend Engineer']);
+    // The board watch still sees both, and the search watch's webhook gets only its match.
+    expect((await api('GET', '/v1/changes', other)).body.changes).toHaveLength(2);
+    expect(await deliverDueWebhooks(ctx)).toBe(1);
+    const payload = JSON.parse(site.hooks[0]!.body);
+    expect(payload).toMatchObject({ watch_id: w.body.id, url: null, changes: [expect.objectContaining({ type: 'JOB_ADDED', summary: 'New job: Backend Engineer (Remote)' })] });
+    expect(payload.changes).toHaveLength(1);
+  });
+
+  it('keeps the directory in sync and keeps directory boards through maintenance', async () => {
+    site.jobs = [{ id: 'a1', title: 'Engineer', location: 'Berlin' }];
+    await syncBoardIndex(ctx, [`${origin}/careers`, `${origin}/board2`, 'not a url']);
+    expect((await syncBoardIndex(ctx, [`${origin}/careers`])).removed).toBe(1);
+    await db.query("UPDATE resources SET created_at = now() - interval '2 days'");
+    const report = await runMaintenance(ctx);
+    expect(report!.deletedResources).toBe(1); // the board that left the directory
+    expect((await db.query('SELECT url, indexed FROM resources')).rows).toEqual([{ url: `${origin}/careers`, indexed: true }]);
+    // An unwatched directory board is checked at the directory's interval.
+    const { rows } = await db.query<{ id: string }>('SELECT id FROM resources');
+    await checkResource(ctx, rows[0]!.id, { waitForHost: true });
+    const next = await db.query<{ secs: number }>('SELECT extract(epoch FROM next_check_at - now())::float AS secs FROM resources');
+    expect(Math.round(next.rows[0]!.secs / 60)).toBe(Math.round(ctx.config.indexCheckIntervalSeconds / 60));
+  });
+
+  it('keeps platform boards that clients watch in the directory, within a cap, until they stop answering', async () => {
+    const board = async (slug: string, jobs: number, failures = 0) => {
+      const { rows } = await db.query<{ id: string }>(
+        `INSERT INTO resources (url, host, selector, adapter, consecutive_failures) VALUES ($1, 'boards-api.greenhouse.io', '', 'greenhouse', $2) RETURNING id`,
+        [`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, failures],
+      );
+      const snap = await db.query<{ id: string }>(
+        `INSERT INTO snapshots (resource_id, status_code, content_hash, structured) VALUES ($1, 200, 'h', $2) RETURNING id`,
+        [rows[0]!.id, JSON.stringify({ jobs: Array.from({ length: jobs }, (_, i) => ({ key: `k${i}`, title: 'Engineer', source: 'greenhouse' })) })],
+      );
+      await db.query('UPDATE resources SET current_snapshot_id = $2 WHERE id = $1', [rows[0]!.id, snap.rows[0]!.id]);
+      return rows[0]!.id;
+    };
+    const [a, empty, b, c] = [await board('a', 3), await board('empty', 0), await board('b', 1), await board('c', 2)];
+    ctx.config.indexMaxPromoted = 2;
+    try {
+      expect(await promoteToDirectory(ctx, a)).toBe(true);
+      expect(await promoteToDirectory(ctx, a)).toBe(false); // already there
+      expect(await promoteToDirectory(ctx, empty)).toBe(false); // nothing to match
+      expect(await promoteToDirectory(ctx, b)).toBe(true);
+      expect(await promoteToDirectory(ctx, c)).toBe(false); // over the cap
+    } finally {
+      ctx.config.indexMaxPromoted = 5000;
+    }
+    // Now monitored with nobody watching, and untouched by the startup sync of the listed boards.
+    expect(await claimDue(ctx, 10)).toHaveLength(1);
+    await syncBoardIndex(ctx, [`${origin}/careers`]);
+    const origins = async () => (await db.query('SELECT index_origin FROM resources WHERE indexed ORDER BY index_origin')).rows.map((r) => r.index_origin);
+    expect(await origins()).toEqual(['directory', 'watched', 'watched']);
+    // A client-added board that keeps failing leaves the directory; listed boards never do.
+    await db.query('UPDATE resources SET consecutive_failures = 20 WHERE id = $1 OR url = $2', [a, `${origin}/careers`]);
+    await runMaintenance(ctx);
+    expect(await origins()).toEqual(['directory', 'watched']);
+    // Switching the directory off empties it, client-added boards included.
+    ctx.config.indexEnabled = false;
+    try {
+      await syncBoardIndex(ctx, []);
+      expect(await origins()).toEqual([]);
+      expect(await promoteToDirectory(ctx, c)).toBe(false);
+    } finally {
+      ctx.config.indexEnabled = true;
+    }
+  });
+
+  it('creates a search watch over MCP from a query alone', async () => {
+    site.jobs = [{ id: 'a1', title: 'iOS Engineer', location: 'Austin', salary: [160_000, 190_000] }];
+    await syncBoardIndex(ctx, [`${origin}/careers`]);
+    await checkAll();
+    const mcp = new McpClient({ name: 'test', version: '1.0.0' });
+    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    const call = async (name: string, args: object) => JSON.parse(((await mcp.callTool({ name, arguments: args as Record<string, unknown> })) as any).content[0].text);
+    const created = await call('watch_jobs', { query: QUERY });
+    expect(created.client_token).toMatch(/^wt_/);
+    expect(created.watch).toMatchObject({ scope: 'all_boards', matching_jobs_count: 1, interpreted: { filters: { keywords: ['ios'], locations: ['austin'], min_salary: 150_000, max_experience_years: 6 } } });
+    site.jobs.push({ id: 'a2', title: 'Senior iOS Engineer', location: 'Austin', salary: [180_000, 220_000] });
+    await checkAll();
+    const changes = await call('get_changes', { client_token: created.client_token });
+    expect(changes.changes.map((c: any) => c.summary)).toEqual(['New job: Senior iOS Engineer (Austin)']);
     await mcp.close();
   });
 

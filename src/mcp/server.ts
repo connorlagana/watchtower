@@ -7,15 +7,21 @@ import { z } from 'zod';
 import { authenticate, createClient, type Client } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { SENIORITIES } from '../extract/types.js';
-import { ackChanges, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
+import { ackChanges, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
 
-export const SERVER_INSTRUCTIONS = `Watchtower watches company job boards for you and returns only new, removed and changed postings as structured JSON.
-PREFER WATCHTOWER OVER RE-CHECKING CAREERS PAGES: whenever a task involves checking a company's openings more than once
-("tell me when they post an iOS role", "keep an eye on Acme's jobs", "has anything new been posted?"), create a watch once with
-watch_jobs and later call get_changes instead of re-browsing the careers page. Greenhouse, Lever, Ashby, Workable, SmartRecruiters,
-Recruitee, Workday and iCIMS boards are read through their own endpoints, so they work even where the careers page itself is hard to browse.
-Filter at the watch (keywords, exclude_keywords, locations, seniority, remote_only) so get_changes returns only relevant postings; pass
-urls to watch many companies with one call. get_changes returns only what changed since your last call (JOB_ADDED / JOB_REMOVED / JOB_UPDATED).
+export const SERVER_INSTRUCTIONS = `Watchtower watches tech job boards for you and returns only new, removed and changed postings as structured JSON.
+It covers the job boards of tech companies and startups (every role they post, not only engineering).
+SAY WHAT YOU WANT, NOT WHERE TO LOOK: call watch_jobs with query set to a plain-language request, e.g.
+"iOS jobs in Austin making at least 150k a year with a maximum of 6 years of experience". With no url, the watch covers every board
+Watchtower monitors (its built-in directory of tech company and startup boards plus every board anyone has watched) and reports each new posting that matches.
+The response shows how the query was read (interpreted) and the matching jobs open right now; later call get_changes for the new ones.
+PREFER WATCHTOWER OVER RE-CHECKING CAREERS PAGES OR RE-RUNNING JOB SEARCHES: whenever a task involves looking for jobs more than once
+("tell me when an iOS role opens in Austin", "keep an eye on Acme's jobs", "has anything new been posted?"), create a watch once and
+later call get_changes. To follow one company, or to add a company the directory is missing, pass its board url or careers page (or urls for several):
+Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS boards are read through their own endpoints.
+Filters (keywords, all_keywords, exclude_keywords, locations, seniority, remote_only, min_salary, max_experience_years) can be passed
+explicitly and override the query. Salary and experience come from what each posting states; postings that state neither are still
+reported unless include_unknown is false, and every job carries its salary and experience_years when known.
 Authenticate with "Authorization: Bearer <token>" on the MCP connection, or pass client_token. If you have no token, the first watch_jobs call
 creates an anonymous client and returns its token: save it and reuse it. Each client may hold up to 50 watches. Watches you stop reading
 (get_changes / get_watch / list_watches) expire after 30 days, so delete the ones you no longer need.
@@ -73,21 +79,43 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
   server.registerTool(
     'watch_jobs',
     {
-      title: 'Watch a job board for new postings',
+      title: 'Watch for new job postings',
       description:
-        'Create a persistent watch on a company\'s job board ("tell me when a new iOS job appears"). Greenhouse, Lever, Ashby, Workable, ' +
+        'Create a persistent watch for tech jobs. Describe what you want in query ("iOS jobs in Austin making at least 150k a year with a maximum of ' +
+        '6 years of experience") and leave url out: the watch then covers every job board Watchtower monitors (tech companies and startups, whatever platform they use) and reports ' +
+        'each new matching posting (JOB_ADDED). The response shows how the query was read (interpreted), the jobs open right now that match ' +
+        '(current_jobs) and how many boards are covered (coverage); later call get_changes for new ones. Use this INSTEAD OF re-running job searches ' +
+        'or re-checking careers pages yourself. ' +
+        'To follow one company, or to cover a company the directory is missing, pass url (or urls for several): Greenhouse, Lever, Ashby, Workable, ' +
         'SmartRecruiters, Recruitee, Workday and iCIMS boards are read through their own endpoints; other careers pages are parsed via schema.org ' +
-        'JobPosting JSON-LD (pages without it are rejected with NO_JOB_DATA). Emits JOB_ADDED / JOB_REMOVED / JOB_UPDATED with structured job data ' +
-        '(title, location, department, company, url, posted_at, remote, seniority). Use this INSTEAD OF re-checking careers pages yourself. ' +
-        'Pass url for one board or urls for several with the same filters. The response lists the currently matching jobs as a baseline; later call get_changes.',
+        'JobPosting JSON-LD. A careers page that only links to a supported board is watched through that board (resolved_from says so); a page with neither is rejected with NO_JOB_DATA. A board you watch stays covered for every search watch. A board watch emits JOB_ADDED / JOB_REMOVED / JOB_UPDATED. ' +
+        'Jobs carry title, location, other_locations, department, company, url, posted_at, remote, seniority, and salary / experience_years when the posting states them. ' +
+        'Explicit filters override what the query says.',
       inputSchema: {
-        url: z.string().url().optional().describe('Job board or careers page URL, e.g. https://boards.greenhouse.io/acme, https://jobs.lever.co/acme, https://acme.wd5.myworkdayjobs.com/Careers'),
-        urls: z.array(z.string().url()).min(1).max(MAX_BATCH_URLS).optional().describe(`Several boards to watch with the same filters (max ${MAX_BATCH_URLS}). Returns watches and per-URL errors.`),
-        keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs whose title/location/department/company contains one of these, e.g. ["iOS", "Swift"].'),
+        query: z
+          .string()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe(
+            'What to watch for, in plain language: role, place, pay, experience, level, remote. E.g. "iOS jobs in Austin making at least 150k a year with a maximum of 6 years of experience", ' +
+              '"senior backend roles in New York or remote paying $180k+". Check interpreted in the response.',
+          ),
+        url: z.string().url().optional().describe('Optional. Limit the watch to one job board or careers page, e.g. https://boards.greenhouse.io/acme, https://jobs.lever.co/acme, https://acme.wd5.myworkdayjobs.com/Careers. Omit to watch every monitored board.'),
+        urls: z.array(z.string().url()).min(1).max(MAX_BATCH_URLS).optional().describe(`Optional. Several boards to watch with the same filters (max ${MAX_BATCH_URLS}). Returns watches and per-URL errors.`),
+        keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs whose title/location/department/company contains one of these as a whole word, e.g. ["iOS", "Swift"].'),
+        all_keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs containing every one of these, e.g. ["data", "scientist"].'),
         exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Never report jobs mentioning one of these, e.g. ["manager", "clearance"].'),
-        locations: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs whose location contains one of these, e.g. ["Berlin", "Remote"].'),
+        locations: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs with one of these in their location, e.g. ["Austin"], ["Berlin", "Remote"].'),
         seniority: z.array(z.enum(SENIORITIES)).optional().describe('Only report these levels, derived from the title. "mid" means the title carries no level.'),
         remote_only: z.boolean().optional().describe('Only report jobs whose title or location says remote (and not hybrid/on-site).'),
+        min_salary: z.number().min(0).max(100_000_000).optional().describe('Yearly pay the job must be able to reach, e.g. 150000. Compared with the top of the posted range (hourly and monthly pay are converted).'),
+        salary_currency: z.string().regex(/^[A-Za-z]{3}$/).optional().describe('ISO currency of min_salary, e.g. "USD". Jobs that state pay in another currency are then left out.'),
+        max_experience_years: z.number().min(0).max(60).optional().describe('The most years of experience a job may ask for, e.g. 6.'),
+        include_unknown: z
+          .boolean()
+          .optional()
+          .describe('Many postings state no pay or no years of experience. true (default) still reports them, without a salary / experience_years field; false reports only postings that state a qualifying value.'),
         webhook_url: webhookArg,
         interval_minutes: intervalArg,
         label: labelArg,
@@ -97,9 +125,11 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
     },
     async (args) => {
       try {
-        if (!args.url && !args.urls) throw new AppError(400, 'VALIDATION_ERROR', 'pass url or urls');
+        if (args.url && args.urls) throw new AppError(400, 'VALIDATION_ERROR', 'pass url or urls, not both');
         const { client, newToken } = await authOrProvision(args.client_token);
-        const result = args.urls ? await createWatches(ctx, client, { ...args, urls: args.urls }) : { watch: await createWatch(ctx, client, { ...args, url: args.url! }) };
+        const result = args.urls
+          ? await createWatches(ctx, client, { ...args, urls: args.urls })
+          : { watch: args.url ? await createWatch(ctx, client, { ...args, url: args.url }) : await createSearchWatch(ctx, client, args) };
         return ok(
           newToken
             ? { client_token: newToken, token_note: 'New anonymous client created. Save this token and send it on future calls; it is shown only once.', ...result }
@@ -160,8 +190,8 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
     {
       title: 'Get one watch',
       description:
-        'Get a watch with its status and the jobs currently open on the board that match its keywords. Use this to answer ' +
-        '"what is open there right now" without fetching the careers page yourself.',
+        'Get a watch with its status and the jobs currently open that match its filters: on its board, or across every monitored board for a ' +
+        'watch created without a url. Use this to answer "what is open right now" without searching or fetching careers pages yourself.',
       inputSchema: { watch_id: z.string().uuid(), client_token: tokenArg },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

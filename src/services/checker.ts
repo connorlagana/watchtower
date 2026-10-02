@@ -3,9 +3,9 @@
  * job list, diff it against the previous snapshot, and persist the new
  * snapshot and change events atomically.
  */
-import { collect, primaryRequestBody, requestsPerCheck } from '../extract/adapters.js';
+import { collect, primaryRequestBody, primaryRequestUrl, requestsPerCheck } from '../extract/adapters.js';
 import { computeChanges, contentHash } from '../extract/diff.js';
-import type { AdapterName, Extraction, JobItem } from '../extract/types.js';
+import { PLATFORM_ADAPTERS, type AdapterName, type Extraction, type JobItem } from '../extract/types.js';
 import { robotsAllows } from '../fetch/robots.js';
 import { FetchError, safeFetch, type FetchResult } from '../fetch/safeFetch.js';
 import { fetchOptions, type Ctx } from './context.js';
@@ -75,11 +75,14 @@ export function checkResource(ctx: Ctx, resourceId: string, opts: CheckOptions =
 }
 
 async function effectiveInterval(ctx: Ctx, resourceId: string): Promise<number> {
-  const { rows } = await ctx.db.query<{ s: number | null }>(
-    'SELECT min(interval_seconds) AS s FROM watches WHERE resource_id = $1 AND deleted_at IS NULL',
+  const { rows } = await ctx.db.query<{ s: number | null; indexed: boolean | null }>(
+    `SELECT (SELECT min(interval_seconds) FROM watches WHERE resource_id = $1 AND deleted_at IS NULL) AS s,
+            (SELECT indexed FROM resources WHERE id = $1) AS indexed`,
     [resourceId],
   );
-  return Math.max(rows[0]?.s ?? ctx.config.defaultCheckIntervalSeconds, ctx.config.minCheckIntervalSeconds);
+  // A directory board is checked at the directory's pace unless a watch asks for something faster.
+  const wanted = [rows[0]?.s, rows[0]?.indexed ? ctx.config.indexCheckIntervalSeconds : null].filter((n): n is number => typeof n === 'number');
+  return Math.max(wanted.length ? Math.min(...wanted) : ctx.config.defaultCheckIntervalSeconds, ctx.config.minCheckIntervalSeconds);
 }
 
 function parseRetryAfter(v: string | undefined): number | undefined {
@@ -158,10 +161,12 @@ function carryForward(current: Extraction, previous: JobItem[]): Extraction {
 
 async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
   const interval = await effectiveInterval(ctx, r.id);
-  const opts = fetchOptions(ctx.config);
+  // Listing APIs return every posting with its text in one response, which is far larger than a careers page.
+  const opts = { ...fetchOptions(ctx.config), ...(PLATFORM_ADAPTERS.has(r.adapter) ? { maxBytes: Math.max(ctx.config.maxBodyBytes, ctx.config.maxApiBodyBytes) } : {}) };
+  const requestUrl = primaryRequestUrl(r.adapter, r.url);
 
   try {
-    if (!(await robotsAllows(r.url, opts))) {
+    if (!(await robotsAllows(requestUrl, opts))) {
       throw new CheckFailure('ROBOTS_DISALLOWED', 'robots.txt disallows fetching this URL; Watchtower respects robots.txt');
     }
 
@@ -170,7 +175,12 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
       if (r.etag) conditional['if-none-match'] = r.etag;
       if (r.last_modified) conditional['if-modified-since'] = r.last_modified;
     }
-    const res = await safeFetch(r.url, { ...opts, headers: conditional, jsonBody: primaryRequestBody(r.adapter) });
+    const request = { ...opts, headers: conditional, jsonBody: primaryRequestBody(r.adapter) };
+    const res = await safeFetch(requestUrl, request).catch((err) => {
+      // A board too large to read with every posting's text is still read as a plain listing (no pay or experience).
+      if (err instanceof FetchError && err.code === 'BODY_TOO_LARGE' && requestUrl !== r.url) return safeFetch(r.url, request);
+      throw err;
+    });
 
     const markHealthy = async (status: number, extraSql = '', extraParams: unknown[] = []) => {
       await ctx.db.query(

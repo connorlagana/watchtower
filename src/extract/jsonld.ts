@@ -1,7 +1,8 @@
 /**
  * schema.org JSON-LD extraction for JobPosting.
  */
-import type { JobItem } from './types.js';
+import { jobDetails, makeSalary, periodOf } from './details.js';
+import type { JobItem, Salary } from './types.js';
 
 type Node = Record<string, unknown>;
 
@@ -89,6 +90,34 @@ function placeText(v: unknown): string | undefined {
   return joined || undefined;
 }
 
+const number = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v.replace(/,/g, ''))) ? Number(v.replace(/,/g, '')) : undefined);
+
+function details(node: Node, title: string) {
+  const d = jobDetails([title, node.description, typeof node.experienceRequirements === 'string' ? node.experienceRequirements : undefined, node.qualifications], baseSalary(node.baseSalary));
+  const years = experienceYears(node.experienceRequirements);
+  return years === undefined ? d : { ...d, experience_years: years };
+}
+
+/** schema.org baseSalary: a MonetaryAmount whose value is a number or a QuantitativeValue range. */
+function baseSalary(v: unknown): Salary | undefined {
+  const amount = asArray(v as Node | Node[])[0];
+  if (!amount || typeof amount !== 'object') return undefined;
+  const value = (amount as Node).value;
+  const q = value && typeof value === 'object' ? (value as Node) : undefined;
+  const single = number(q ? q.value : value);
+  const min = number(q?.minValue) ?? single;
+  const max = number(q?.maxValue) ?? (q?.minValue === undefined ? single : undefined);
+  if (min === undefined && max === undefined) return undefined;
+  const top = max ?? min!;
+  return makeSalary(min, max, periodOf(q?.unitText ?? (amount as Node).unitText) ?? (top >= 10_000 ? 'year' : 'hour'), str((amount as Node).currency));
+}
+
+/** schema.org experienceRequirements: text, or OccupationalExperienceRequirements with monthsOfExperience. */
+function experienceYears(v: unknown): number | undefined {
+  const months = v && typeof v === 'object' ? number((v as Node).monthsOfExperience) : undefined;
+  return months !== undefined && months >= 0 && months <= 600 ? Math.round((months / 12) * 10) / 10 : undefined;
+}
+
 export function extractJsonLd(docs: unknown[], baseUrl?: string): { jobs: JobItem[] } {
   const jobs = new Map<string, JobItem>();
   const abs = (u?: string) => {
@@ -119,6 +148,7 @@ export function extractJsonLd(docs: unknown[], baseUrl?: string): { jobs: JobIte
         url,
         posted_at: str(node.datePosted),
         source: 'jsonld',
+        ...details(node, title),
       });
     }
   }

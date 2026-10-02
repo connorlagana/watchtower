@@ -8,7 +8,7 @@
  */
 import { createHmac, randomBytes } from 'node:crypto';
 import { safePost } from '../fetch/safeFetch.js';
-import { WATCH_SEES_CHANGE, type Ctx } from './context.js';
+import { WATCH_READS_RESOURCE, WATCH_SEES_CHANGE, type Ctx } from './context.js';
 import { metrics } from './metrics.js';
 
 const MAX_ATTEMPTS = 8;
@@ -26,12 +26,12 @@ export async function enqueueWebhooks(ctx: Ctx, resourceId: string, minId: numbe
   const { rowCount } = await ctx.db.query(
     `INSERT INTO webhook_deliveries (watch_id, payload)
      SELECT w.id, jsonb_build_object(
-              'watch_id', w.id, 'watch_label', w.label, 'url', w.source_url,
+              'watch_id', w.id, 'watch_label', w.label, 'url', w.source_url, 'query', w.query,
               'changes', jsonb_agg(jsonb_build_object(
                  'id', c.id, 'type', c.type, 'summary', c.summary, 'detected_at', c.detected_at, 'data', c.data) ORDER BY c.id))
        FROM watches w
-       JOIN changes c ON c.resource_id = w.resource_id
-      WHERE w.resource_id = $1 AND w.deleted_at IS NULL AND w.webhook_url IS NOT NULL
+       JOIN changes c ON true
+      WHERE c.resource_id = $1 AND ${WATCH_READS_RESOURCE} AND w.deleted_at IS NULL AND w.webhook_url IS NOT NULL
         AND c.id > GREATEST($2::bigint, w.baseline) AND c.id <= $3
         AND ${WATCH_SEES_CHANGE}
       GROUP BY w.id`,

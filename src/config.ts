@@ -40,6 +40,8 @@ export interface Config {
 
   fetchTimeoutMs: number;
   maxBodyBytes: number;
+  /** Body cap for job-board platform APIs, whose listings carry every posting's text. */
+  maxApiBodyBytes: number;
   maxRedirects: number;
   /** DANGEROUS: lets the fetcher reach private/loopback addresses. Tests and the local demo only. */
   allowPrivateNetworks: boolean;
@@ -61,6 +63,14 @@ export interface Config {
   trustProxy: boolean;
   rateLimitPerMinute: number;
   clientCreationPerHour: number;
+
+  /** Monitor the built-in directory of boards so search watches (no URL) have something to match. */
+  indexEnabled: boolean;
+  indexCheckIntervalSeconds: number;
+  /** How many boards watched by URL may be kept in the directory after their watch ends. 0 keeps none. */
+  indexMaxPromoted: number;
+  /** Optional file of extra board URLs (one per line, # comments) to add to the directory. */
+  indexBoardsFile: string | null;
 
   webhookTimeoutMs: number;
   /** If set, GET /metrics requires "Authorization: Bearer <token>". */
@@ -88,6 +98,7 @@ export function loadConfig(): Config {
 
     fetchTimeoutMs: int('FETCH_TIMEOUT_MS', 15_000),
     maxBodyBytes: int('MAX_BODY_BYTES', 3 * 1024 * 1024),
+    maxApiBodyBytes: int('MAX_API_BODY_BYTES', 64 * 1024 * 1024),
     maxRedirects: int('MAX_REDIRECTS', 5),
     allowPrivateNetworks,
     allowedPorts: portsRaw
@@ -95,7 +106,7 @@ export function loadConfig(): Config {
       .map((p) => p.trim())
       .filter(Boolean)
       .map(Number),
-    userAgent: str('USER_AGENT', `WatchtowerBot/0.1 (+${publicBaseUrl}; job-board monitoring for AI agents)`),
+    userAgent: str('USER_AGENT', `WatchtowerBot/0.1 (+${publicBaseUrl}; tech job monitoring for AI agents)`),
 
     hostMinSpacingMs: int('HOST_MIN_SPACING_MS', 2000),
 
@@ -109,6 +120,11 @@ export function loadConfig(): Config {
     trustProxy: bool('TRUST_PROXY', false),
     rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
     clientCreationPerHour: int('CLIENT_CREATION_PER_HOUR', 10),
+
+    indexEnabled: bool('INDEX_ENABLED', true),
+    indexCheckIntervalSeconds: int('INDEX_CHECK_INTERVAL_SECONDS', 4 * 3600),
+    indexMaxPromoted: int('INDEX_MAX_PROMOTED', 5000),
+    indexBoardsFile: process.env.INDEX_BOARDS_FILE || null,
 
     webhookTimeoutMs: int('WEBHOOK_TIMEOUT_MS', 10_000),
     metricsToken: process.env.METRICS_TOKEN || null,

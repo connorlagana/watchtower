@@ -65,10 +65,13 @@ export const metrics = {
 };
 
 export async function renderMetrics(db: Db): Promise<string> {
-  const { rows } = await db.query<{ watches: number; resources: number; failing: number; blocked: number; webhooks_pending: number }>(
+  const { rows } = await db.query<{ watches: number; search_watches: number; resources: number; directory: number; overdue: number; failing: number; blocked: number; webhooks_pending: number }>(
     `SELECT
        (SELECT count(*) FROM watches WHERE deleted_at IS NULL)::int AS watches,
+       (SELECT count(*) FROM watches WHERE deleted_at IS NULL AND resource_id IS NULL)::int AS search_watches,
        (SELECT count(DISTINCT resource_id) FROM watches WHERE deleted_at IS NULL)::int AS resources,
+       (SELECT count(*) FROM resources WHERE indexed)::int AS directory,
+       (SELECT count(*) FROM resources WHERE indexed AND consecutive_failures = 0 AND next_check_at < now() - interval '1 hour')::int AS overdue,
        (SELECT count(*) FROM resources WHERE consecutive_failures > 0)::int AS failing,
        (SELECT count(*) FROM resources
          WHERE last_checked_at > now() - interval '1 hour'
@@ -80,7 +83,10 @@ export async function renderMetrics(db: Db): Promise<string> {
   return [
     ...Object.values(metrics).map((m) => m.render()),
     gauge('watchtower_active_watches', 'Active watches.', g.watches),
+    gauge('watchtower_search_watches', 'Active watches with no URL (matched against every monitored board).', g.search_watches),
     gauge('watchtower_active_resources', 'Resources with at least one active watch.', g.resources),
+    gauge('watchtower_directory_boards', 'Boards in the directory, monitored whether or not anyone watches them.', g.directory),
+    gauge('watchtower_directory_overdue_boards', 'Healthy directory boards more than an hour past their due check: the directory is larger than the check interval allows.', g.overdue),
     gauge('watchtower_failing_resources', 'Resources whose last check failed.', g.failing),
     gauge('watchtower_blocked_resources_1h', 'Resources that returned 401/403/429 or a bot challenge in the last hour.', g.blocked),
     gauge('watchtower_webhooks_pending', 'Webhook deliveries waiting to be sent or retried.', g.webhooks_pending),

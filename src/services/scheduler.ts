@@ -6,8 +6,9 @@
  * politeness lease is held; the lease itself (taken in the checker) is what
  * guarantees one in-flight fetch per host across all replicas.
  */
+import { PROMOTED_MAX_FAILURES } from './boardIndex.js';
 import { checkResource } from './checker.js';
-import type { Ctx } from './context.js';
+import { RESOURCE_IS_MONITORED, type Ctx } from './context.js';
 import { deliverDueWebhooks } from './webhooks.js';
 
 const CLAIM_LEASE_SECONDS = 600;
@@ -22,7 +23,7 @@ export async function claimDue(ctx: Ctx, limit: number): Promise<string[]> {
             SELECT DISTINCT ON (r.host) r.id, r.next_check_at
               FROM resources r
              WHERE r.next_check_at <= now()
-               AND EXISTS (SELECT 1 FROM watches w WHERE w.resource_id = r.id AND w.deleted_at IS NULL)
+               AND ${RESOURCE_IS_MONITORED}
                AND NOT EXISTS (SELECT 1 FROM host_leases h WHERE h.host = r.host AND h.leased_until > now())
              ORDER BY r.host, r.next_check_at
           ) per_host
@@ -67,8 +68,10 @@ export async function runMaintenance(ctx: Ctx): Promise<MaintenanceReport | null
         deletedClients: 0,
       };
       await q("DELETE FROM watches WHERE deleted_at < now() - interval '30 days'");
+      // A board a client added to the directory leaves it once it has stopped answering.
+      await q("UPDATE resources SET indexed = false, index_origin = NULL WHERE indexed AND index_origin = 'watched' AND consecutive_failures >= $1", [PROMOTED_MAX_FAILURES]);
       report.deletedResources = await q(
-        `DELETE FROM resources r WHERE r.created_at < now() - interval '1 day'
+        `DELETE FROM resources r WHERE r.created_at < now() - interval '1 day' AND NOT r.indexed
             AND NOT EXISTS (SELECT 1 FROM watches w WHERE w.resource_id = r.id)`,
       );
       report.deletedClients = await q(

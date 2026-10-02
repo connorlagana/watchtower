@@ -6,10 +6,11 @@
  * Any other careers page is read through its schema.org JobPosting markup.
  */
 import { classify } from './classify.js';
+import { jobDetails, makeSalary, periodOf } from './details.js';
 import { extractHtml } from './html.js';
 import { collectIcims, resolveIcims, searchUrlFor } from './icims.js';
 import { extractJsonLd, parseJsonLdBlocks } from './jsonld.js';
-import type { AdapterName, Extraction, JobItem } from './types.js';
+import type { AdapterName, Extraction, JobItem, Salary } from './types.js';
 import { collectWorkday, pageBody, resolveWorkday } from './workday.js';
 
 export interface ResolvedSource {
@@ -92,6 +93,20 @@ export function primaryRequestBody(adapter: AdapterName): string | undefined {
   return adapter === 'workday' ? pageBody(0) : undefined;
 }
 
+/**
+ * The URL actually requested for a resource. Listing APIs that can include the
+ * posting text and pay range in the same response are asked to, so salary and
+ * experience are known without a request per job. The resource URL (its
+ * identity) stays the plain listing URL.
+ */
+export function primaryRequestUrl(adapter: AdapterName, fetchUrl: string): string {
+  const withParams = (params: string) => `${fetchUrl}${fetchUrl.includes('?') ? '&' : '?'}${params}`;
+  if (adapter === 'greenhouse') return withParams('content=true&pay_transparency=true');
+  if (adapter === 'ashby') return withParams('includeCompensation=true');
+  if (adapter === 'workable') return withParams('details=true');
+  return fetchUrl;
+}
+
 /** Adapters that need more than one request per check, and how many at most. */
 export function requestsPerCheck(adapter: AdapterName): number {
   if (adapter === 'workday') return 10;
@@ -99,18 +114,41 @@ export function requestsPerCheck(adapter: AdapterName): number {
   return 1;
 }
 
+type Rec = Record<string, unknown>;
+const s_ = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+const joinParts = (...parts: unknown[]) => parts.map(s_).filter(Boolean).join(', ') || undefined;
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : undefined);
+/** Further locations, without repeats of the primary one. */
+const others = (primary: string | undefined, all: unknown[]): string[] | undefined => {
+  const list = [...new Set(all.map(s_).filter((x): x is string => !!x && x !== primary))].slice(0, 20);
+  return list.length ? list : undefined;
+};
+
+/** Greenhouse pay-transparency ranges: [{ min_cents, max_cents, currency_type, title }]. */
+function greenhousePay(v: unknown): Salary | undefined {
+  const r = Array.isArray(v) ? (v[0] as Rec | undefined) : undefined;
+  const min = num(r?.min_cents);
+  const max = num(r?.max_cents);
+  if (!r || (min === undefined && max === undefined)) return undefined;
+  const top = (max ?? min!) / 100;
+  return makeSalary(min === undefined ? undefined : min / 100, max === undefined ? undefined : max / 100, periodOf(r.title) ?? (top >= 10_000 ? 'year' : 'hour'), s_(r.currency_type));
+}
+
 function greenhouse(body: string): Extraction {
   const data = JSON.parse(body) as { jobs?: Record<string, unknown>[] };
   const jobs: JobItem[] = (data.jobs ?? []).map((j) => {
     const depts = (j.departments as { name?: string }[] | undefined)?.map((d) => d.name).filter(Boolean);
+    const title = String(j.title ?? '').trim();
     return {
       key: `job:greenhouse:${j.id}`,
-      title: String(j.title ?? '').trim(),
+      title,
       location: (j.location as { name?: string } | undefined)?.name?.trim() || undefined,
       department: depts?.length ? depts.join(', ') : undefined,
+      company: s_(j.company_name),
       url: typeof j.absolute_url === 'string' ? j.absolute_url : undefined,
       posted_at: typeof j.first_published === 'string' ? j.first_published : undefined,
       source: 'greenhouse',
+      ...jobDetails([title, j.content], greenhousePay(j.pay_input_ranges)),
     };
   });
   return { jobs };
@@ -121,10 +159,19 @@ function lever(body: string): Extraction {
   if (!Array.isArray(data)) throw new Error('unexpected Lever response');
   const jobs: JobItem[] = data.map((j) => {
     const cat = (j.categories ?? {}) as Record<string, unknown>;
+    const title = String(j.text ?? '').trim();
+    const location = typeof cat.location === 'string' ? cat.location : undefined;
+    const pay = j.salaryRange as Rec | undefined;
+    const lists = Array.isArray(j.lists) ? (j.lists as Rec[]).flatMap((l) => [l.text, l.content]) : [];
     return {
       key: `job:lever:${j.id}`,
-      title: String(j.text ?? '').trim(),
-      location: typeof cat.location === 'string' ? cat.location : undefined,
+      title,
+      location,
+      other_locations: others(location, Array.isArray(cat.allLocations) ? cat.allLocations : []),
+      ...jobDetails(
+        [title, j.descriptionPlain, ...lists, j.additionalPlain, j.salaryDescriptionPlain],
+        pay ? makeSalary(num(pay.min), num(pay.max), periodOf(pay.interval) ?? 'year', s_(pay.currency)) : undefined,
+      ),
       department: [cat.team, cat.commitment].filter((x) => typeof x === 'string').join(', ') || undefined,
       url: typeof j.hostedUrl === 'string' ? j.hostedUrl : undefined,
       posted_at: typeof j.createdAt === 'number' ? new Date(j.createdAt).toISOString() : undefined,
@@ -134,9 +181,12 @@ function lever(body: string): Extraction {
   return { jobs };
 }
 
-type Rec = Record<string, unknown>;
-const s_ = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-const joinParts = (...parts: unknown[]) => parts.map(s_).filter(Boolean).join(', ') || undefined;
+/** Ashby compensation (includeCompensation=true): the salary component of the summary. */
+function ashbyPay(v: unknown): Salary | undefined {
+  const parts = (v as { summaryComponents?: Rec[] } | undefined)?.summaryComponents;
+  const pay = Array.isArray(parts) ? parts.find((c) => c.compensationType === 'Salary' && (num(c.minValue) !== undefined || num(c.maxValue) !== undefined)) : undefined;
+  return pay ? makeSalary(num(pay.minValue), num(pay.maxValue), periodOf(pay.interval) ?? 'year', s_(pay.currencyCode)) : undefined;
+}
 
 function ashby(body: string): Extraction {
   const data = JSON.parse(body) as { jobs?: Rec[] };
@@ -146,6 +196,8 @@ function ashby(body: string): Extraction {
       key: `job:ashby:${j.id}`,
       title: String(j.title ?? '').trim(),
       location: joinParts(j.location, j.isRemote === true ? 'Remote' : undefined),
+      other_locations: others(s_(j.location), Array.isArray(j.secondaryLocations) ? (j.secondaryLocations as Rec[]).map((l) => l?.location) : []),
+      ...jobDetails([j.title, j.descriptionPlain ?? j.descriptionHtml], ashbyPay(j.compensation)),
       department: joinParts(j.department, j.team),
       url: s_(j.jobUrl),
       posted_at: s_(j.publishedAt),
@@ -160,6 +212,8 @@ function workable(body: string): Extraction {
     key: `job:workable:${j.shortcode ?? j.id ?? j.url}`,
     title: String(j.title ?? '').trim(),
     location: joinParts(j.city, j.state, j.country, j.telecommuting === true ? 'Remote' : undefined),
+    other_locations: others(joinParts(j.city, j.state, j.country), Array.isArray(j.locations) ? (j.locations as Rec[]).map((l) => joinParts(l?.city, l?.region, l?.country)) : []),
+    ...jobDetails([j.title, j.description, j.requirements, j.benefits]),
     department: s_(j.department),
     company: s_(data.name),
     url: s_(j.url) ?? s_(j.application_url),
@@ -188,11 +242,18 @@ function smartrecruiters(body: string, fetchUrl?: string): Extraction {
   return { jobs };
 }
 
+function recruiteePay(v: unknown): Salary | undefined {
+  const pay = v as Rec | null | undefined;
+  if (!pay || (num(pay.min) === undefined && num(pay.max) === undefined)) return undefined;
+  return makeSalary(num(pay.min), num(pay.max), periodOf(pay.period) ?? 'year', s_(pay.currency));
+}
+
 function recruitee(body: string): Extraction {
   const data = JSON.parse(body) as { offers?: Rec[] };
   const jobs: JobItem[] = (data.offers ?? []).map((j) => ({
     key: `job:recruitee:${j.id}`,
     title: String(j.title ?? '').trim(),
+    ...jobDetails([j.title, j.description, j.requirements], recruiteePay(j.salary)),
     location: s_(j.location) ?? joinParts(j.city, j.country, j.remote === true ? 'Remote' : undefined),
     department: s_(j.department),
     company: s_(j.company_name),
@@ -219,6 +280,36 @@ function extractOne(adapter: AdapterName, body: string, contentType: string, opt
 
 const finalize = (x: Extraction): Extraction => ({ complete: true, ...x, jobs: classify(x.jobs) });
 
+const BOARD_SLUG: Partial<Record<AdapterName, RegExp>> = {
+  greenhouse: /\/v1\/boards\/([^/?]+)/,
+  lever: /\/v0\/postings\/([^/?]+)/,
+  ashby: /\/job-board\/([^/?]+)/,
+  workable: /\/accounts\/([^/?]+)/,
+  smartrecruiters: /\/companies\/([^/?]+)/,
+  recruitee: /^https:\/\/([^./]+)\.recruitee\.com/,
+  workday: /\/wday\/cxs\/([^/?]+)/,
+  icims: /^https:\/\/(?:careers-)?([^./]+)\.icims\.com/,
+};
+
+/** A readable company name from the board's slug ("acme-robotics" → "Acme Robotics"), for sources that do not name the company. */
+export function companyFromBoard(adapter: AdapterName, fetchUrl: string): string | undefined {
+  const slug = BOARD_SLUG[adapter]?.exec(fetchUrl)?.[1];
+  if (!slug) return undefined;
+  let text = slug;
+  try {
+    text = decodeURIComponent(slug);
+  } catch {
+    /* keep the raw slug */
+  }
+  return text.replace(/[-_.]+/g, ' ').trim().replace(/\b[a-z]/g, (c) => c.toUpperCase()) || undefined;
+}
+
+/** Results across many boards are only useful when each job says whose it is. */
+function withCompany(x: Extraction, adapter: AdapterName, fetchUrl: string): Extraction {
+  const company = companyFromBoard(adapter, fetchUrl);
+  return company ? { ...x, jobs: x.jobs.map((j) => (j.company ? j : { ...j, company })) } : x;
+}
+
 /** Extract jobs from a single response (every adapter except Workday and iCIMS). */
 export function extract(adapter: AdapterName, body: string, contentType: string, opts: { baseUrl?: string } = {}): Extraction {
   return finalize(extractOne(adapter, body, contentType, opts));
@@ -234,11 +325,11 @@ export interface MoreRequests {
  * `more` for adapters that need them.
  */
 export async function collect(adapter: AdapterName, fetchUrl: string, primary: { body: string; contentType: string; finalUrl: string }, more: MoreRequests): Promise<Extraction> {
-  if (adapter === 'workday') return finalize(await collectWorkday(fetchUrl, primary.body, (offset) => more(fetchUrl, pageBody(offset))));
+  if (adapter === 'workday') return withCompany(finalize(await collectWorkday(fetchUrl, primary.body, (offset) => more(fetchUrl, pageBody(offset)))), adapter, fetchUrl);
   if (adapter === 'icims') {
     // The search page is an enrichment: a failure there still leaves a complete job list.
     const search = await more(searchUrlFor(fetchUrl)).catch(() => null);
-    return finalize(collectIcims(primary.body, search));
+    return withCompany(finalize(collectIcims(primary.body, search)), adapter, fetchUrl);
   }
-  return extract(adapter, primary.body, primary.contentType, { baseUrl: primary.finalUrl });
+  return withCompany(extract(adapter, primary.body, primary.contentType, { baseUrl: primary.finalUrl }), adapter, fetchUrl);
 }

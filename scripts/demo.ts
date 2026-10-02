@@ -25,7 +25,7 @@ const { createPool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');
 
 // ---------------------------------------------------------------- fixture site
-const jobs = [
+const jobs: { id: string; title: string; location: string; description?: string }[] = [
   { id: 'eng-101', title: 'Backend Engineer', location: 'Berlin' },
   { id: 'des-202', title: 'Product Designer', location: 'Remote' },
 ];
@@ -35,6 +35,7 @@ function careersPage(): string {
     '@type': 'JobPosting',
     identifier: j.id,
     title: j.title,
+    ...(j.description ? { description: j.description } : {}),
     hiringOrganization: { '@type': 'Organization', name: 'Acme Robotics' },
     jobLocation: { '@type': 'Place', address: { addressLocality: j.location } },
     url: `/careers/${j.id}`,
@@ -93,17 +94,25 @@ try {
   const allWatch = await api('POST', '/v1/watches', token2, { url: siteUrl, label: 'Every Acme role' });
   show({ id: allWatch.id, same_resource: (allWatch.resource as { id: string }).id === (jobWatch.resource as { id: string }).id, initial_check: allWatch.initial_check });
 
-  step(4, 'Re-check while only the page around the jobs changed (new session token, new "N minutes ago")');
+  step(4, 'A third agent has no URL at all: it describes the job it wants, and the watch covers every monitored board');
+  const { token: token3 } = (await api('POST', '/v1/clients')) as { token: string };
+  const searchWatch = await api('POST', '/v1/watches', token3, { query: 'remote iOS jobs paying at least 150k with a maximum of 6 years of experience' });
+  show({ id: searchWatch.id, scope: searchWatch.scope, interpreted: (searchWatch.interpreted as { filters: unknown }).filters, coverage: searchWatch.coverage, current_jobs: searchWatch.current_jobs });
+
+  step(5, 'Re-check while only the page around the jobs changed (new session token, new "N minutes ago")');
   show((await api('POST', `/v1/watches/${jobWatch.id}/check`, token)).check);
 
-  step(5, 'The source changes: Acme posts an iOS role and an Android role');
-  jobs.push({ id: 'ios-303', title: 'Senior iOS Engineer', location: 'Remote - US' }, { id: 'and-404', title: 'Android Engineer', location: 'Berlin' });
+  step(6, 'The source changes: Acme posts an iOS role and an Android role');
+  jobs.push(
+    { id: 'ios-303', title: 'Senior iOS Engineer', location: 'Remote - US', description: 'You have 5+ years of experience shipping iOS apps. The salary range for this role is $165,000 - $210,000 per year.' },
+    { id: 'and-404', title: 'Android Engineer', location: 'Berlin' },
+  );
   console.log(jobs.map((j) => `  - ${j.title} (${j.location})`).join('\n'));
 
-  step(6, 'Watchtower checks the resource (the scheduler does this automatically; forced here)');
+  step(7, 'Watchtower checks the resource (the scheduler does this automatically; forced here)');
   show((await api('POST', `/v1/watches/${jobWatch.id}/check`, token)).check);
 
-  step(7, 'Agent calls get_changes over MCP — only structured changes come back');
+  step(8, 'Agent calls get_changes over MCP — only structured changes come back');
   const mcp = new McpClient({ name: 'demo-agent', version: '1.0.0' });
   await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
   const tools = await mcp.listTools();
@@ -111,17 +120,28 @@ try {
   const result = (await mcp.callTool({ name: 'get_changes', arguments: {} })) as { content: { text: string }[] };
   show(JSON.parse(result.content[0]!.text));
 
-  step(8, 'Calling get_changes again returns nothing new (cursor advanced)');
+  step(9, 'Calling get_changes again returns nothing new (cursor advanced)');
   const again = (await mcp.callTool({ name: 'get_changes', arguments: {} })) as { content: { text: string }[] };
   show(JSON.parse(again.content[0]!.text));
   await mcp.close();
 
-  step(9, 'The second agent, with no keyword filter, sees both new roles');
+  step(10, 'The second agent, with no keyword filter, sees both new roles');
   show(((await api('GET', '/v1/changes', token2)) as { changes: { summary: string }[] }).changes.map((c) => c.summary));
+
+  step(11, 'The third agent, which never named a board, gets the iOS role with its pay and experience');
+  show(
+    ((await api('GET', '/v1/changes', token3)) as { changes: { summary: string; data: { job: Record<string, unknown> } }[] }).changes.map((c) => ({
+      summary: c.summary,
+      company: c.data.job.company,
+      salary: c.data.job.salary,
+      experience_years: c.data.job.experience_years,
+    })),
+  );
+  await api('DELETE', `/v1/watches/${searchWatch.id}`, token3);
 
   await api('DELETE', `/v1/watches/${jobWatch.id}`, token);
   await api('DELETE', `/v1/watches/${allWatch.id}`, token2);
-  console.log('\nDone. The Android role was filtered out by the "ios" keyword on the first watch; one fetch served both agents.');
+  console.log('\nDone. The Android role was filtered out by the "ios" keyword on the first watch; one fetch served all three agents.');
 } finally {
   await app.close();
   fixture.close();

@@ -41,3 +41,12 @@ groups:
         labels: { severity: info }
         annotations:
           summary: "p95 check duration above 10s"
+
+      - alert: WatchtowerDirectoryBehind
+        # One request per platform is in flight at a time, so a large directory needs a long enough interval.
+        expr: watchtower_directory_overdue_boards > 100
+        for: 2h
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $value }} directory boards are more than an hour overdue"
+          description: "Raise INDEX_CHECK_INTERVAL_SECONDS, or lower SCHEDULER_TICK_MS towards HOST_MIN_SPACING_MS."

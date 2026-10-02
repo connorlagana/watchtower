@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authenticate, bearerToken, createClient } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { SENIORITIES } from '../extract/types.js';
-import { ackChanges, checkNow, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
+import { ackChanges, checkNow, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
 
 const createWatchBody = z
   .object({
@@ -11,16 +11,24 @@ const createWatchBody = z
     type: z.literal('jobs').optional(),
     url: z.string().url().max(2048).optional(),
     urls: z.array(z.string().url().max(2048)).min(1).max(MAX_BATCH_URLS).optional(),
+    // What to look for, in plain language. Read into the filters below; explicit filters win.
+    query: z.string().min(1).max(500).optional(),
     keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
+    all_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
     exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
     locations: z.array(z.string().min(1).max(100)).max(20).optional(),
     seniority: z.array(z.enum(SENIORITIES)).optional(),
     remote_only: z.boolean().optional(),
+    min_salary: z.number().min(0).max(100_000_000).optional(),
+    salary_currency: z.string().regex(/^[A-Za-z]{3}$/).optional(),
+    max_experience_years: z.number().min(0).max(60).optional(),
+    include_unknown: z.boolean().optional(),
     interval_minutes: z.number().int().min(1).max(10080).optional(),
     label: z.string().max(200).optional(),
     webhook_url: z.string().url().max(2048).optional(),
   })
-  .refine((b) => (b.url === undefined) !== (b.urls === undefined), { message: 'pass url or urls, not both' });
+  // Neither url nor urls: a search watch across every monitored board.
+  .refine((b) => b.url === undefined || b.urls === undefined, { message: 'pass url or urls, not both' });
 
 const ackBody = z.object({
   cursor: z.number().int().min(0),
@@ -69,7 +77,8 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
     const { type: _type, url, urls, ...body } = parse(createWatchBody, req.body);
     reply.code(201);
     if (urls) return createWatches(ctx, client, { ...body, urls });
-    return createWatch(ctx, client, { ...body, url: url! });
+    if (url) return createWatch(ctx, client, { ...body, url });
+    return createSearchWatch(ctx, client, body);
   });
 
   app.get('/v1/watches', async (req) => listWatches(ctx, await auth(req)));
