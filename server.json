@@ -1,0 +1,10 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "lat.watchtower/watchtower",
+  "title": "Watchtower",
+  "description": "Job alerts for AI agents: describe a role once, get only new postings from 1,000+ tech job boards.",
+  "version": "0.1.0",
+  "websiteUrl": "https://watchtower.lat/",
+  "repository": { "url": "https://github.com/connorlagana/watchtower", "source": "github" },
+  "remotes": [{ "type": "streamable-http", "url": "https://watchtower.lat/mcp?ref=registry" }]
+}

@@ -33,6 +33,52 @@ export const TOOLS = [
   { name: 'delete_watch', summary: 'Stop monitoring and free a watch slot.' },
 ];
 
+export const SERVER_NAME = 'lat.watchtower/watchtower';
+
+/** The MCP URL a listing or install path hands out; ?ref= records where a new client came from. */
+export const mcpUrl = (base: string, ref?: string) => `${base}/mcp${ref ? `?ref=${ref}` : ''}`;
+
+/** Copy-paste and one-click install for the common MCP clients. */
+export function installLinks(base: string) {
+  const name = 'watchtower';
+  return {
+    claudeCode: `claude mcp add --transport http ${name} ${mcpUrl(base, 'claude-code')}`,
+    cursor: `cursor://anysphere.cursor-deeplink/mcp/install?name=${name}&config=${Buffer.from(JSON.stringify({ url: mcpUrl(base, 'cursor') })).toString('base64')}`,
+    vscode: `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, type: 'http', url: mcpUrl(base, 'vscode') }))}`,
+    json: JSON.stringify({ mcpServers: { [name]: { type: 'http', url: mcpUrl(base) } } }, null, 2),
+  };
+}
+
+/**
+ * MCP server card: what this server is, read before connecting. The discovery path is still a draft
+ * (SEP-2127), so it is served at both /.well-known/mcp.json and /.well-known/mcp-server-card.
+ */
+export function serverCard(base: string) {
+  return {
+    $schema: 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json',
+    name: SERVER_NAME,
+    title: 'Watchtower',
+    description: TAGLINE,
+    version: '0.1.0',
+    websiteUrl: `${base}/`,
+    repository: { url: 'https://github.com/connorlagana/watchtower', source: 'github' },
+    remotes: [{ type: 'streamable-http', url: mcpUrl(base) }],
+    authentication: 'none required: the first watch_jobs call returns an anonymous token',
+    documentation: { llms_txt: `${base}/llms.txt`, metadata: `${base}/.well-known/watchtower.json` },
+  };
+}
+
+export function robotsTxt(base: string): string {
+  return `User-agent: *
+Allow: /
+Disallow: /v1/
+Disallow: /metrics
+
+# For AI agents: ${base}/llms.txt
+# MCP server: ${mcpUrl(base)}
+`;
+}
+
 export function wellKnown(base: string, info: SiteInfo) {
   return {
     name: 'Watchtower',
@@ -114,11 +160,19 @@ faster, and returns structured jobs, not pages.
 - Any other careers page that publishes schema.org JobPosting JSON-LD. Pages without it are rejected with NO_JOB_DATA.
 - Pass \`urls\` (up to 25) to watch several companies with the same filters in one call.
 
+## Install
+
+- Claude Code: \`${installLinks(base).claudeCode}\`
+- Claude.ai / Claude Desktop: Settings → Connectors → Add custom connector → ${mcpUrl(base)}
+- Cursor, VS Code and the rest: one-click links at ${base}/#install, or add
+  \`{"mcpServers": {"watchtower": {"type": "http", "url": "${mcpUrl(base)}"}}}\` to the client's MCP config.
+
 ## Connect
 
 - MCP (Streamable HTTP): ${base}/mcp
 - REST: ${base}/v1
 - Machine-readable metadata: ${base}/.well-known/watchtower.json
+- MCP server card: ${base}/.well-known/mcp.json
 
 ## Auth
 
@@ -177,6 +231,7 @@ function esc(s: string): string {
 
 export function homepage(base: string, info: SiteInfo): string {
   const b = esc(base);
+  const links = installLinks(base);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -186,6 +241,7 @@ export function homepage(base: string, info: SiteInfo): string {
 <meta name="description" content="${esc(TAGLINE)}">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 <link rel="alternate" type="application/json" href="/.well-known/watchtower.json" title="Watchtower metadata">
+<link rel="alternate" type="application/json" href="/.well-known/mcp.json" title="MCP server card">
 <style>
   :root { --bg:#fbfaf7; --fg:#1d1d1b; --muted:#65635c; --line:#e3e0d8; --code:#f1efe8; --accent:#2f5d50; }
   @media (prefers-color-scheme: dark) { :root { --bg:#141412; --fg:#ecebe6; --muted:#a19f97; --line:#2c2b27; --code:#1f1e1b; --accent:#8cc5b1; } }
@@ -204,6 +260,8 @@ export function homepage(base: string, info: SiteInfo): string {
   table { border-collapse: collapse; width: 100%; font-size: 15px; }
   td { border-top: 1px solid var(--line); padding: 8px 8px 8px 0; vertical-align: top; }
   td:first-child { white-space: nowrap; }
+  .install { display:flex; flex-wrap:wrap; gap:8px; margin: 4px 0 14px; }
+  .install a { display:inline-block; text-decoration:none; color:var(--bg); background:var(--accent); border-radius:6px; padding:7px 14px; font-weight:600; font-size:15px; }
   .badge { display:inline-block; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:2px 10px; margin-bottom:18px; }
 </style>
 </head>
@@ -214,12 +272,15 @@ export function homepage(base: string, info: SiteInfo): string {
   <p class="lead">${esc(TAGLINE)}</p>
   <p class="muted">Create a watch once: <code>"${esc(EXAMPLE_QUERY)}"</code>. Watchtower checks the job boards of tech companies and startups on a schedule, remembers which jobs were open, and <code>get_changes</code> hands back only the new postings that match. Or watch one company's board by URL.</p>
 
-  <h2>Connect an agent (MCP)</h2>
-  <pre>{
-  "mcpServers": {
-    "watchtower": { "type": "http", "url": "${b}/mcp" }
-  }
-}</pre>
+  <h2 id="install">Connect an agent (MCP)</h2>
+  <div class="install">
+    <a href="${esc(links.cursor)}">Add to Cursor</a>
+    <a href="${esc(links.vscode)}">Add to VS Code</a>
+  </div>
+  <p>Claude Code:</p>
+  <pre>${esc(links.claudeCode)}</pre>
+  <p>Claude.ai and Claude Desktop: <em>Settings → Connectors → Add custom connector</em>, URL <code>${esc(mcpUrl(base))}</code>. Any other MCP client:</p>
+  <pre>${esc(links.json)}</pre>
   <p class="muted">No token yet? The first <code>watch_jobs</code> call creates an anonymous client and returns its token. Send it back as <code>Authorization: Bearer &lt;token&gt;</code> or as <code>client_token</code>.</p>
 
   <h2>Tools</h2>
@@ -275,7 +336,7 @@ curl -s ${b}/v1/changes -H "Authorization: Bearer $TOKEN"</pre>
   </ul>
 
   <h2>Machine-readable</h2>
-  <p><a href="/llms.txt">/llms.txt</a> · <a href="/.well-known/watchtower.json">/.well-known/watchtower.json</a> · <a href="/health">/health</a></p>
+  <p><a href="/llms.txt">/llms.txt</a> · <a href="/.well-known/watchtower.json">/.well-known/watchtower.json</a> · <a href="/.well-known/mcp.json">/.well-known/mcp.json</a> · <a href="https://github.com/connorlagana/watchtower">GitHub</a> · <a href="/health">/health</a></p>
 </main>
 </body>
 </html>`;

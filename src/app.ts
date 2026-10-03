@@ -4,11 +4,11 @@ import { registerApiRoutes } from './api/routes.js';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { buildMcpServer } from './mcp/server.js';
-import { bearerToken } from './services/clients.js';
+import { bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
-import { renderMetrics } from './services/metrics.js';
+import { metrics, renderMetrics } from './services/metrics.js';
 import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
-import { homepage, llmsTxt, wellKnown } from './web/site.js';
+import { homepage, llmsTxt, robotsTxt, serverCard, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
   logger?: boolean;
@@ -46,6 +46,13 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homepage(base, site)));
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
   app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
+  app.get('/.well-known/mcp.json', async () => serverCard(base));
+  app.get('/.well-known/mcp-server-card', async () => serverCard(base));
+  app.get('/robots.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(robotsTxt(base)));
+  if (config.mcpRegistryAuth) {
+    const record = config.mcpRegistryAuth;
+    app.get('/.well-known/mcp-registry-auth', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(record));
+  }
   app.get('/health', { config: { limit: false } }, async () => {
     await db.query('SELECT 1');
     return { ok: true };
@@ -67,7 +74,15 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
     (await hit(db, clientBucket(ip), { name: 'client_creation', max: config.clientCreationPerHour, windowSeconds: 3600 })).allowed;
 
   app.post('/mcp', async (req, reply) => {
-    const server = buildMcpServer(ctx, { headerToken: bearerToken(req.headers.authorization), allowProvision: () => allowProvision(req.ip) });
+    const origin = clientOrigin(req.query, req.headers['user-agent']);
+    const body = req.body as { method?: unknown; params?: { clientInfo?: { name?: unknown; version?: unknown } } } | undefined;
+    if (body?.method === 'initialize') {
+      const info = body.params?.clientInfo;
+      const client = typeof info?.name === 'string' ? info.name.toLowerCase().replace(/[^a-z0-9._ -]/g, '').slice(0, 40) || 'unknown' : 'unknown';
+      metrics.mcpInitialize.inc({ client, ref: origin.source ?? 'none' });
+      req.log.info({ mcp_client: client, mcp_client_version: typeof info?.version === 'string' ? info.version.slice(0, 40) : undefined, ref: origin.source }, 'mcp initialize');
+    }
+    const server = buildMcpServer(ctx, { headerToken: bearerToken(req.headers.authorization), allowProvision: () => allowProvision(req.ip), origin });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.raw.on('close', () => {
       void transport.close();

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { authenticate, bearerToken, createClient } from '../services/clients.js';
+import { authenticate, bearerToken, clientOrigin, createClient } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { SENIORITIES } from '../extract/types.js';
 import { ackChanges, checkNow, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
@@ -60,8 +60,8 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
   app.post(
     '/v1/clients',
     { config: { limit: { name: 'client_creation', max: opts.clientCreationPerHour, windowSeconds: 3600 } } },
-    async (_req, reply) => {
-      const { client, token } = await createClient(ctx);
+    async (req, reply) => {
+      const { client, token } = await createClient(ctx, clientOrigin(req.query, req.headers['user-agent']));
       reply.code(201);
       return {
         client_id: client.id,

@@ -1,0 +1,10 @@
+{
+  "name": "watchtower",
+  "version": "0.1.0",
+  "description": "Tech job alerts for Claude: describe the job once and get only the new postings that match, from 1,000+ tech company and startup job boards.",
+  "author": { "name": "Connor Lagana", "url": "https://watchtower.lat" },
+  "homepage": "https://watchtower.lat",
+  "repository": "https://github.com/connorlagana/watchtower",
+  "license": "MIT",
+  "keywords": ["jobs", "job-search", "careers", "alerts", "mcp"]
+}

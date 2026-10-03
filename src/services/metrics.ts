@@ -17,9 +17,12 @@ class Counter {
   constructor(
     readonly name: string,
     readonly help: string,
+    /** Caps the number of series when label values come from callers; the rest are counted under "other". */
+    readonly maxSeries = Infinity,
   ) {}
   inc(labels: Labels = {}, by = 1) {
-    const k = key(labels);
+    let k = key(labels);
+    if (!this.values.has(k) && this.values.size >= this.maxSeries) k = key(Object.fromEntries(Object.keys(labels).map((l) => [l, 'other'])));
     this.values.set(k, (this.values.get(k) ?? 0) + by);
   }
   get(labels: Labels = {}): number {
@@ -62,6 +65,7 @@ export const metrics = {
   changes: new Counter('watchtower_changes_emitted_total', 'Change events written, by type.'),
   webhooks: new Counter('watchtower_webhook_deliveries_total', 'Webhook delivery attempts by result.'),
   hostBusy: new Counter('watchtower_host_busy_total', 'Checks deferred because another fetch to the same host was in flight.'),
+  mcpInitialize: new Counter('watchtower_mcp_initialize_total', 'MCP initialize requests by the clientInfo name the agent reports (e.g. claude-code, cursor) and ?ref= tag.', 200),
 };
 
 export async function renderMetrics(db: Db): Promise<string> {
@@ -79,6 +83,9 @@ export async function renderMetrics(db: Db): Promise<string> {
        (SELECT count(*) FROM webhook_deliveries WHERE status = 'pending')::int AS webhooks_pending`,
   );
   const g = rows[0]!;
+  const sources = await db.query<{ source: string; n: number }>(
+    `SELECT coalesce(source, 'none') AS source, count(*)::int AS n FROM clients WHERE created_at > now() - interval '7 days' GROUP BY 1 ORDER BY 1`,
+  );
   const gauge = (name: string, help: string, v: number) => `# HELP ${name} ${help}\n# TYPE ${name} gauge\n${name} ${v}`;
   return [
     ...Object.values(metrics).map((m) => m.render()),
@@ -90,5 +97,10 @@ export async function renderMetrics(db: Db): Promise<string> {
     gauge('watchtower_failing_resources', 'Resources whose last check failed.', g.failing),
     gauge('watchtower_blocked_resources_1h', 'Resources that returned 401/403/429 or a bot challenge in the last hour.', g.blocked),
     gauge('watchtower_webhooks_pending', 'Webhook deliveries waiting to be sent or retried.', g.webhooks_pending),
+    [
+      '# HELP watchtower_clients_created_7d Clients created in the last 7 days, by the ?ref= tag they arrived with.',
+      '# TYPE watchtower_clients_created_7d gauge',
+      ...sources.rows.map((r) => `watchtower_clients_created_7d{source="${r.source.replace(/["\\\n]/g, '_')}"} ${r.n}`),
+    ].join('\n'),
   ].join('\n\n') + '\n';
 }

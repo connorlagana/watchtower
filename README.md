@@ -19,6 +19,21 @@ Watchtower checks the job boards of tech companies and startups on a schedule an
 - Free and anonymous: a client gets a token and up to 50 watches (a search across all boards is one watch).
 - TypeScript, Node.js 22, Fastify 5, PostgreSQL, the official MCP TypeScript SDK. No LLM or third-party API keys required.
 
+## Use the hosted service
+
+Watchtower runs at **[watchtower.lat](https://watchtower.lat)**, free, with no sign-up. MCP endpoint: `https://watchtower.lat/mcp`.
+
+- **Claude Code**: `claude mcp add --transport http watchtower https://watchtower.lat/mcp`, or install the plugin, which adds a skill that tells Claude when to use it:
+  ```
+  /plugin marketplace add connorlagana/watchtower
+  /plugin install watchtower@watchtower
+  ```
+- **Claude.ai / Claude Desktop**: Settings → Connectors → Add custom connector → `https://watchtower.lat/mcp`.
+- **Cursor, VS Code**: one-click buttons at [watchtower.lat/#install](https://watchtower.lat/#install).
+- **Anything else**: `{ "mcpServers": { "watchtower": { "type": "http", "url": "https://watchtower.lat/mcp" } } }`.
+
+Listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `lat.watchtower/watchtower` ([server.json](server.json)).
+
 ## Quick start
 
 ```bash
@@ -217,7 +232,19 @@ A search watch has no resource of its own. It reads the same change events, from
 - changes emitted by type;
 - webhook results;
 - host-busy deferrals;
-- gauges for active watches/resources, search watches, directory boards and how many are overdue, failing and blocked resources, and pending webhooks.
+- gauges for active watches/resources, search watches, directory boards and how many are overdue, failing and blocked resources, and pending webhooks;
+- where agents come from: `watchtower_mcp_initialize_total` by the MCP client name an agent reports (`claude-code`, `cursor`, ...), and `watchtower_clients_created_7d` by the `?ref=` tag on the URL a client was created through. Each listing and install path hands out its own tag (`/mcp?ref=registry`, `?ref=claude-plugin`, `?ref=cursor`, ...); `clients.source` and `clients.user_agent` keep it per client.
+
+### Listing in the MCP Registry
+
+[server.json](server.json) is the registry entry. The `lat.watchtower/*` namespace is proven by HTTP: set `MCP_REGISTRY_AUTH` to the public-key record and the app serves it at `/.well-known/mcp-registry-auth`. Then, with the matching private key:
+
+```bash
+mcp-publisher login http --domain watchtower.lat --private-key "$PRIVATE_KEY_HEX"
+mcp-publisher publish          # bump "version" in server.json for each new publish
+```
+
+Robots, the MCP server card (`/.well-known/mcp.json`, also at `/.well-known/mcp-server-card` while the path is still a draft) and the install links on the homepage are generated from `PUBLIC_BASE_URL`.
 
 [`ops/alerts.yml`](ops/alerts.yml) has example alert rules: sites refusing us, high error rate, checks stalled, webhook backlog, slow fetches, and the directory falling behind its check interval.
 

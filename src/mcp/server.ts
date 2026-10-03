@@ -4,7 +4,7 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { authenticate, createClient, type Client } from '../services/clients.js';
+import { authenticate, createClient, type Client, type ClientOrigin } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { SENIORITIES } from '../extract/types.js';
 import { ackChanges, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
@@ -60,9 +60,11 @@ export interface McpRequestContext {
   headerToken: string | undefined;
   /** Resolves false when this caller has used up its anonymous-client allowance. */
   allowProvision: () => Promise<boolean>;
+  /** Recorded on a client this request provisions. */
+  origin?: ClientOrigin;
 }
 
-export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpRequestContext): McpServer {
+export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }: McpRequestContext): McpServer {
   const server = new McpServer({ name: 'watchtower', version: '0.1.0' }, { instructions: SERVER_INSTRUCTIONS });
 
   const auth = (argToken?: string): Promise<Client> => authenticate(ctx, argToken ?? headerToken);
@@ -72,7 +74,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision }: McpReq
     const token = argToken ?? headerToken;
     if (token) return { client: await auth(argToken) };
     if (!(await allowProvision())) throw new AppError(429, 'RATE_LIMITED', 'too many anonymous clients created from this address; reuse your existing token');
-    const { client, token: newToken } = await createClient(ctx);
+    const { client, token: newToken } = await createClient(ctx, origin);
     return { client, newToken };
   };
 

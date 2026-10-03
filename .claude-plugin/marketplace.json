@@ -1,0 +1,19 @@
+{
+  "name": "watchtower",
+  "owner": {
+    "name": "Connor Lagana",
+    "url": "https://watchtower.lat"
+  },
+  "metadata": {
+    "description": "Watchtower: tech job alerts for AI agents."
+  },
+  "plugins": [
+    {
+      "name": "watchtower",
+      "source": "./plugin",
+      "description": "Tech job alerts for Claude: describe the job once and get only the new postings that match, from 1,000+ tech company and startup job boards.",
+      "homepage": "https://watchtower.lat",
+      "category": "productivity"
+    }
+  ]
+}

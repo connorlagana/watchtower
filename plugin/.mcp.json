@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "watchtower": { "type": "http", "url": "https://watchtower.lat/mcp?ref=claude-plugin" }
+  }
+}

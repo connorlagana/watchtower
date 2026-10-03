@@ -153,6 +153,34 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const llms = await app.inject({ url: '/llms.txt' });
     expect(llms.body).toMatch(/prefer Watchtower over re-running job searches or re-checking careers pages/i);
     expect(llms.body).toContain('## Search watches (no URL)');
+    expect(llms.body).toContain('claude mcp add --transport http watchtower');
+    expect(home.body).toContain('cursor://anysphere.cursor-deeplink/mcp/install?name=watchtower');
+    expect(home.body).toContain('vscode:mcp/install?');
+    const card = await api('GET', '/.well-known/mcp.json');
+    expect(card.body).toMatchObject({ name: 'lat.watchtower/watchtower', remotes: [{ type: 'streamable-http' }] });
+    expect(card.body.remotes[0].url).toMatch(/\/mcp$/);
+    expect((await api('GET', '/.well-known/mcp-server-card')).body).toEqual(card.body);
+    const robots = await app.inject({ url: '/robots.txt' });
+    expect(robots.statusCode).toBe(200);
+    expect(robots.body).toContain('/llms.txt');
+    // Not configured in tests, so not served.
+    expect((await app.inject({ url: '/.well-known/mcp-registry-auth' })).statusCode).toBe(404);
+  });
+
+  it('records which listing or install path a client came from', async () => {
+    await app.inject({ method: 'POST', url: '/v1/clients?ref=Smithery', headers: { 'user-agent': 'curl/8.7.1' } });
+    await app.inject({ method: 'POST', url: '/v1/clients?ref=bad%20tag!' });
+    const mcp = new McpClient({ name: 'Claude-Code', version: '2.1.0' });
+    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp?ref=claude-plugin`)));
+    await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } });
+    await mcp.close();
+    const { rows } = await db.query<{ source: string | null; user_agent: string | null }>('SELECT source, user_agent FROM clients ORDER BY created_at');
+    expect(rows.map((r) => r.source)).toEqual(['smithery', null, 'claude-plugin']);
+    expect(rows[0]!.user_agent).toBe('curl/8.7.1');
+    const text = (await app.inject({ url: '/metrics' })).body;
+    expect(text).toContain('watchtower_mcp_initialize_total{client="claude-code",ref="claude-plugin"} 1');
+    expect(text).toContain('watchtower_clients_created_7d{source="smithery"} 1');
+    expect(text).toContain('watchtower_clients_created_7d{source="none"} 1');
   });
 
   it('requires a valid token', async () => {
