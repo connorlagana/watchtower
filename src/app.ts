@@ -8,7 +8,7 @@ import { bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
 import { metrics, renderMetrics } from './services/metrics.js';
 import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
-import { homepage, llmsTxt, robotsTxt, serverCard, wellKnown } from './web/site.js';
+import { homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
   logger?: boolean;
@@ -44,6 +44,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   const base = config.publicBaseUrl;
   const site = { maxWatches: config.maxWatchesPerClient, watchTtlDays: config.watchTtlDays };
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homepage(base, site)));
+  app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(privacyPage(base, site)));
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
   app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
   app.get('/.well-known/mcp.json', async () => serverCard(base));

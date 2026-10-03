@@ -163,6 +163,10 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const robots = await app.inject({ url: '/robots.txt' });
     expect(robots.statusCode).toBe(200);
     expect(robots.body).toContain('/llms.txt');
+    const privacy = await app.inject({ url: '/privacy' });
+    expect(privacy.statusCode).toBe(200);
+    expect(privacy.body).toContain('only a SHA-256 hash of the token is stored');
+    expect(home.body).toContain('href="/privacy"');
     // Not configured in tests, so not served.
     expect((await app.inject({ url: '/.well-known/mcp-registry-auth' })).statusCode).toBe(404);
   });
@@ -384,6 +388,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const { tools } = await mcp.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_jobs']);
     expect(tools.find((t) => t.name === 'watch_jobs')!.description).toMatch(/INSTEAD OF re-running job searches or re-checking careers pages/);
+    // Directories require every tool to say whether it reads, writes or destroys.
+    for (const t of tools) {
+      expect(t.title ?? t.annotations?.title).toBeTruthy();
+      expect(t.annotations?.readOnlyHint === true || typeof t.annotations?.destructiveHint === 'boolean').toBe(true);
+    }
+    expect(tools.filter((t) => t.annotations?.destructiveHint).map((t) => t.name)).toEqual(['delete_watch']);
 
     const created = JSON.parse(((await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } })) as any).content[0].text);
     expect(created.client_token).toMatch(/^wt_/);

@@ -123,7 +123,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
         label: labelArg,
         client_token: tokenArg,
       },
-      annotations: { readOnlyHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async (args) => {
       try {
@@ -159,7 +159,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
         peek: z.boolean().optional().describe('If true, do not mark returned changes as delivered.'),
         client_token: tokenArg,
       },
-      annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
@@ -218,7 +218,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
         watch_id: z.string().uuid().optional().describe('Limit the acknowledgement to one watch. Omit for all your watches.'),
         client_token: tokenArg,
       },
-      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (args) => {
       try {

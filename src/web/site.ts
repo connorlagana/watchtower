@@ -65,7 +65,38 @@ export function serverCard(base: string) {
     remotes: [{ type: 'streamable-http', url: mcpUrl(base) }],
     authentication: 'none required: the first watch_jobs call returns an anonymous token',
     documentation: { llms_txt: `${base}/llms.txt`, metadata: `${base}/.well-known/watchtower.json` },
+    privacy_policy: `${base}/privacy`,
+    support: 'https://github.com/connorlagana/watchtower/issues',
   };
+}
+
+/** Plain description of what the service stores, generated from the same settings the code enforces. */
+export function privacyPage(base: string, info: SiteInfo): string {
+  return page(
+    'Watchtower privacy',
+    `<h1>Privacy</h1>
+  <p class="muted">What Watchtower (${esc(base)}) stores, why, and for how long.</p>
+  <h2>No accounts</h2>
+  <p>Watchtower has no sign-up. A client is an anonymous random token; only a SHA-256 hash of the token is stored. Watchtower never asks for a name, email address or résumé.</p>
+  <h2>What is stored</h2>
+  <ul>
+    <li><strong>Your watches</strong>: the query text, filters, board URLs, optional label and optional webhook URL you send, so they can be checked and matched. Write nothing personal in a query or label.</li>
+    <li><strong>Client metadata</strong>: when the token was created and last used, the <code>?ref=</code> tag of the URL it was created through, and the User-Agent of that request, to see which install paths are used.</li>
+    <li><strong>Rate limiting</strong>: request counts keyed by IP address (IPv6 by /64), deleted after one day.</li>
+    <li><strong>Server logs</strong>: the hosting provider's request logs (time, path, status, IP address), used to operate and debug the service.</li>
+    <li><strong>Job data</strong>: postings read from public job boards and the changes detected in them.</li>
+  </ul>
+  <h2>How long</h2>
+  <ul>
+    <li>Watches nobody reads for ${info.watchTtlDays} days expire, and deleted watches are purged after 30 days.</li>
+    <li>Clients unused for 90 days are deleted with their watches.</li>
+    <li>Detected changes are deleted after 30 days by default.</li>
+  </ul>
+  <h2>Sharing</h2>
+  <p>Watchtower does not sell or share this data, show ads or use it to train models. The only outbound requests carrying your data are the webhook deliveries you configure. Boards you watch by URL are added to the shared directory that every search watch covers, without anything that identifies you.</p>
+  <h2>Deleting your data</h2>
+  <p>Call <code>delete_watch</code> (or <code>DELETE /v1/watches/{id}</code>) to remove a watch, or simply stop using the token. Questions: <a href="https://github.com/connorlagana/watchtower/issues">github.com/connorlagana/watchtower/issues</a>.</p>`,
+  );
 }
 
 export function robotsTxt(base: string): string {
@@ -123,6 +154,8 @@ export function wellKnown(base: string, info: SiteInfo) {
     },
     docs: `${base}/`,
     llms_txt: `${base}/llms.txt`,
+    privacy_policy: `${base}/privacy`,
+    support: 'https://github.com/connorlagana/watchtower/issues',
   };
 }
 
@@ -229,15 +262,14 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 }
 
-export function homepage(base: string, info: SiteInfo): string {
-  const b = esc(base);
-  const links = installLinks(base);
+/** The shared HTML shell: styles, metadata links and a <main> column. */
+function page(title: string, main: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Watchtower</title>
+<title>${esc(title)}</title>
 <meta name="description" content="${esc(TAGLINE)}">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 <link rel="alternate" type="application/json" href="/.well-known/watchtower.json" title="Watchtower metadata">
@@ -267,7 +299,18 @@ export function homepage(base: string, info: SiteInfo): string {
 </head>
 <body>
 <main>
-  <span class="badge">Free · for AI agents · MCP + REST</span>
+  ${main}
+</main>
+</body>
+</html>`;
+}
+
+export function homepage(base: string, info: SiteInfo): string {
+  const b = esc(base);
+  const links = installLinks(base);
+  return page(
+    'Watchtower',
+    `<span class="badge">Free · for AI agents · MCP + REST</span>
   <h1>Watchtower</h1>
   <p class="lead">${esc(TAGLINE)}</p>
   <p class="muted">Create a watch once: <code>"${esc(EXAMPLE_QUERY)}"</code>. Watchtower checks the job boards of tech companies and startups on a schedule, remembers which jobs were open, and <code>get_changes</code> hands back only the new postings that match. Or watch one company's board by URL.</p>
@@ -336,8 +379,7 @@ curl -s ${b}/v1/changes -H "Authorization: Bearer $TOKEN"</pre>
   </ul>
 
   <h2>Machine-readable</h2>
-  <p><a href="/llms.txt">/llms.txt</a> · <a href="/.well-known/watchtower.json">/.well-known/watchtower.json</a> · <a href="/.well-known/mcp.json">/.well-known/mcp.json</a> · <a href="https://github.com/connorlagana/watchtower">GitHub</a> · <a href="/health">/health</a></p>
-</main>
-</body>
-</html>`;
+  <p><a href="/llms.txt">/llms.txt</a> · <a href="/.well-known/watchtower.json">/.well-known/watchtower.json</a> · <a href="/.well-known/mcp.json">/.well-known/mcp.json</a> · <a href="https://github.com/connorlagana/watchtower">GitHub</a> · <a href="/privacy">Privacy</a> · <a href="/health">/health</a></p>
+`,
+  );
 }
