@@ -7,6 +7,7 @@ import type { JobItem } from '../src/extract/types.js';
 import { careersPageCandidates, detectBoardLinks, probeTarget, slugCandidates } from '../src/search/discover.js';
 import { parseQuery } from '../src/search/query.js';
 import { buildFilters, jobMatches } from '../src/services/watches.js';
+import { agentPrompt } from '../src/web/site.js';
 
 /** Only the filters the query set, for compact expectations. */
 function read(query: string) {
@@ -62,6 +63,56 @@ describe('parseQuery', () => {
     expect(parsed).toMatchObject({ keywords: ['python'], locations: ['berlin'] });
     expect(parsed.min_salary).toBeUndefined();
     expect(parsed.notes[0]).toMatch(/maximum salary/);
+  });
+
+  it('reads a request pasted whole into an agent, and a state written without a comma', () => {
+    expect(read('hey use watchtower.lat to find new ios roles for at least 150k under 6 years of experience in austin texas')).toEqual({
+      keywords: ['ios'],
+      locations: ['austin'],
+      min_salary: 150_000,
+      max_experience_years: 6,
+    });
+    expect(read('senior react engineer roles in seattle wa')).toEqual({ keywords: ['react'], locations: ['seattle'], seniority: ['senior'] });
+    expect(read('roles in albany new york')).toEqual({ locations: ['albany'] });
+    expect(read('designer roles in new york')).toEqual({ keywords: ['designer'], locations: ['new york'] });
+    expect(read('node.js roles in kansas city')).toEqual({ keywords: ['node.js'], locations: ['kansas city'] });
+  });
+
+  it('reads every prompt the homepage quiz builds back into the choices that built it', () => {
+    const roleSets: [string[], Record<string, string[]>][] = [
+      [['iOS'], { keywords: ['ios'] }],
+      [['iOS', 'Android'], { keywords: ['ios', 'android'] }],
+      [['Machine learning', 'Product design'], { keywords: ['machine learning', 'product design'] }],
+      [['Machine learning'], { all_keywords: ['machine', 'learning'] }],
+    ];
+    const placeSets: [string[], Record<string, unknown>][] = [
+      [[], {}],
+      [['Austin, TX'], { locations: ['austin'] }],
+      [['Remote'], { remote_only: true }],
+      [['Austin, TX', 'Remote'], { locations: ['austin', 'remote'] }],
+      [['San Francisco, CA', 'New York, NY'], { locations: ['san francisco', 'new york'] }],
+    ];
+    for (const [roles, roleWant] of roleSets)
+      for (const [locations, placeWant] of placeSets)
+        for (const salaryK of [0, 150])
+          for (const years of [0, 1, 6]) {
+            const prompt = agentPrompt('watchtower.lat', 'https://watchtower.lat/llms.txt', { roles, locations, salaryK, years });
+            const want: Record<string, unknown> = { ...roleWant, ...placeWant };
+            if (salaryK) Object.assign(want, { min_salary: salaryK * 1000, salary_currency: 'USD' });
+            if (years) want.max_experience_years = years;
+            expect(read(prompt), prompt).toEqual(want);
+          }
+  });
+
+  it('widens a city to its metro area when asked, and keeps every area the quiz offers', () => {
+    const areas = { 'the SF Bay Area': 'palo alto', 'the NYC metro area': 'jersey city', 'the Greater Austin area': 'round rock', 'the Greater Seattle area': 'bellevue', 'Greater Boston': 'cambridge', 'Greater Los Angeles': 'santa monica', Chicagoland: 'evanston', 'the Denver metro area': 'boulder' };
+    for (const [area, town] of Object.entries(areas)) {
+      const { locations } = parseQuery(agentPrompt('watchtower.lat', 'https://watchtower.lat/llms.txt', { roles: ['iOS'], locations: [area, 'Remote'], salaryK: 0, years: 0 }));
+      expect(locations, area).toContain(town);
+      expect(locations, area).toContain('remote');
+    }
+    expect(read('iOS roles in the Austin area')).toMatchObject({ locations: ['austin', 'round rock', 'cedar park', 'pflugerville', 'leander', 'san marcos'] });
+    expect(read('iOS roles in Austin')).toMatchObject({ locations: ['austin'] });
   });
 
   it('never throws', () => {

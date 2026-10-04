@@ -48,12 +48,26 @@ const PAY_UNIT = String.raw`(?:\s*(usd|cad|aud|eur|gbp|dollars|euros|pounds)\b)?
 const PAY = new RegExp(`(${PAY_LEAD})?(?:${PAY_FLOOR}|${PAY_CEILING})?${AMOUNT}${PAY_UNIT}`, 'gi');
 const CURRENCY: Record<string, string> = { $: 'USD', '£': 'GBP', '€': 'EUR', usd: 'USD', dollars: 'USD', cad: 'CAD', aud: 'AUD', eur: 'EUR', euros: 'EUR', gbp: 'GBP', pounds: 'GBP' };
 
+/**
+ * Metro areas, for "the Greater Austin area" as opposed to just "Austin": every name below counts as a match. Towns whose names
+ * belong mostly to other places (Louisville, Lakewood, Everett…) are left out, so an area rarely pulls in jobs from elsewhere.
+ */
+const METROS: [names: string[], places: string[]][] = [
+  [['bay area', 'sf bay area', 'san francisco bay area'], ['bay area', 'san francisco', 'south san francisco', 'oakland', 'berkeley', 'emeryville', 'san jose', 'palo alto', 'mountain view', 'sunnyvale', 'menlo park', 'redwood city', 'san mateo', 'santa clara', 'cupertino', 'foster city']],
+  [['greater austin', 'austin area', 'greater austin area', 'austin metro', 'austin metro area'], ['austin', 'round rock', 'cedar park', 'pflugerville', 'leander', 'san marcos']],
+  [['nyc metro', 'nyc metro area', 'new york metro', 'new york metro area', 'new york area', 'greater new york'], ['new york', 'nyc', 'brooklyn', 'manhattan', 'jersey city', 'hoboken', 'stamford', 'white plains']],
+  [['greater seattle', 'seattle area', 'greater seattle area', 'seattle metro', 'puget sound'], ['seattle', 'bellevue', 'redmond', 'kirkland', 'bothell', 'tacoma']],
+  [['greater boston', 'boston area', 'greater boston area', 'boston metro'], ['boston', 'cambridge', 'somerville', 'waltham', 'woburn', 'needham']],
+  [['greater los angeles', 'la area', 'los angeles area', 'greater los angeles area', 'socal'], ['los angeles', 'santa monica', 'culver city', 'pasadena', 'burbank', 'irvine', 'long beach', 'el segundo', 'playa vista']],
+  [['chicagoland', 'chicago area', 'greater chicago', 'chicago metro'], ['chicago', 'evanston', 'schaumburg', 'naperville', 'oak brook']],
+  [['denver metro', 'denver metro area', 'denver area', 'greater denver', 'front range'], ['denver', 'boulder', 'broomfield']],
+];
+
 const PLACE_ALIASES: Record<string, string[]> = {
+  ...Object.fromEntries(METROS.flatMap(([names, places]) => names.map((n) => [n, places]))),
   nyc: ['new york', 'nyc'],
   'new york city': ['new york', 'nyc'],
   sf: ['san francisco', 'sf'],
-  'bay area': ['bay area', 'san francisco', 'oakland', 'san jose', 'palo alto', 'mountain view', 'sunnyvale', 'menlo park', 'redwood city'],
-  'sf bay area': ['bay area', 'san francisco', 'oakland', 'san jose', 'palo alto', 'mountain view', 'sunnyvale', 'menlo park', 'redwood city'],
   'silicon valley': ['san jose', 'palo alto', 'mountain view', 'sunnyvale', 'menlo park', 'cupertino', 'santa clara'],
   la: ['los angeles'],
   dc: ['washington'],
@@ -75,6 +89,21 @@ const REGIONS = new Set(
     .concat(['new hampshire', 'new jersey', 'new mexico', 'new york', 'north carolina', 'north dakota', 'rhode island', 'south carolina', 'south dakota', 'west virginia', 'united states', 'united kingdom']),
 );
 
+const STATE_CODES = new Set(
+  'al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc'.split(' '),
+);
+
+/** "austin texas" / "austin tx", written without a comma: the city, as postings say "Austin, TX". */
+function dropTrailingRegion(place: string): string {
+  const words = place.split(' ');
+  for (const n of [2, 1]) {
+    if (words.length <= n) continue;
+    const tail = words.slice(-n).join(' ');
+    if (REGIONS.has(tail) || (n === 1 && STATE_CODES.has(tail))) return words.slice(0, -n).join(' ');
+  }
+  return place;
+}
+
 const PLACE = /\b(?:based\s+in|located\s+in|in\s+or\s+(?:near|around)|in|near|around)\s+(?:the\s+)?(.+?)(?=\s*(?:\||$|\b(?:with|that|which|who|making|paying|requiring|for|at|as|where|on|from)\b))/i;
 
 const LEVELS: [Seniority, RegExp][] = [
@@ -92,7 +121,8 @@ const STOPWORDS = new Set(
   ('job jobs role roles position positions opening openings listing listings posting postings opportunity opportunities gig gigs work new newly all any every find show watch track monitor ' +
     'notify alert alerts me us my tell let know when whenever about for the a an with that which who are is be in at of and or to i we want wants looking look need needs get please ' +
     'company companies level levels experience experienced years year hiring there posted post open up comes come appears appear available full time fulltime full-time only just also ' +
-    'some based located area anywhere everything regardless board boards it its this these those on by from like such as type types kind kinds').split(' '),
+    'some based located area anywhere everything regardless board boards it its this these those on by from like such as type types kind kinds ' +
+    'hey hi hello use using via they them you your ones whatever check keep eye').split(' '),
 );
 
 /** Role nouns that say little on their own: "iOS engineer" should also find "iOS Developer". */
@@ -111,15 +141,32 @@ function places(phrase: string): string[] {
       const part = raw.replace(/^(?:the|greater)\s+/, '').replace(/\s+(?:metro(?:politan)?\s+area|metro|area|region)$/, '').replace(/[.!?]+$/, '').trim();
       // "Austin, TX" / "Austin, Texas": the state narrows the city, it is not a second place.
       if (!part || (i > 0 && (part.length <= 2 || REGIONS.has(part)))) return;
-      out.push(...(PLACE_ALIASES[part] ?? PLACE_ALIASES[raw.trim()] ?? [part]));
+      const city = dropTrailingRegion(part);
+      const named = raw.trim().replace(/^the\s+/, '').replace(/[.!?]+$/, '');
+      out.push(...(PLACE_ALIASES[named] ?? PLACE_ALIASES[part] ?? PLACE_ALIASES[city] ?? [city]));
     });
   }
   return uniq(out);
 }
 
+/** The words of a request that can name a role: lower case, singular, without stop words and punctuation. */
+function roleWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[\s,;:|()"“”!?/]+/)
+    .map((w) => w.replace(/^[.'’-]+(?=[^.])|[.'’-]+$/g, (edge, offset: number) => (offset === 0 && edge === '.' ? edge : '')))
+    .filter((w) => w && /[\p{L}\p{N}]/u.test(w) && !STOPWORDS.has(w))
+    .map(singular);
+}
+
 export function parseQuery(query: string): ParsedQuery {
   const out: ParsedQuery = { keywords: [], all_keywords: [], exclude_keywords: [], locations: [], seniority: [], remote_only: false, notes: [] };
-  let rest = ` ${query.replace(/\s+/g, ' ').trim()} `;
+  let rest = ` ${query.replace(/\s+/g, ' ').trim()} `
+    // A request pasted whole into an agent ("hey, use watchtower.lat to find …, docs at https://…") names the service; that is not part of the role.
+    .replace(/https?:\/\/\S+/gi, CUT)
+    .replace(/\b(?:(?:please|hey|hi|hello)[\s,!]+)*(?:(?:use|using|via|with|through|ask|on)\s+)?watchtower(?:\.[a-z]{2,})?(?:\s+to)?\b/gi, CUT)
+    // "…in Austin, TX, and tell me when …": what to do with the results ends the search, so it is never read as a place.
+    .replace(/[\s,.;!?]+(?:(?:and|then)\s+)*(?=(?:tell|let|notify|alert|ping|email|message|send|show)\s+me\b)/gi, CUT);
   const take = (re: RegExp): RegExpExecArray | null => {
     const m = re.exec(rest);
     if (m) rest = `${rest.slice(0, m.index)}${CUT}${rest.slice(m.index + m[0].length)}`;
@@ -191,12 +238,21 @@ export function parseQuery(query: string): ParsedQuery {
 
   // What is left names the role.
   const anyOf = /\s(?:or)\s|\//i.test(rest.replace(/\|/g, ' '));
-  const words = rest
-    .toLowerCase()
-    .split(/[\s,;:|()"“”!?/]+/)
-    .map((w) => w.replace(/^[.'’-]+(?=[^.])|[.'’-]+$/g, (edge, offset: number) => (offset === 0 && edge === '.' ? edge : '')))
-    .filter((w) => w && /[\p{L}\p{N}]/u.test(w) && !STOPWORDS.has(w))
-    .map(singular);
+  const words = roleWords(rest);
+  if (anyOf) {
+    // "machine learning or product design roles": each alternative is a phrase, so "learning" alone never matches "Learning & Development".
+    const phrases = rest
+      .toLowerCase()
+      .split(/\s+or\s+|\/|\|/)
+      .map((group) => roleWords(group).filter((w) => !GENERIC.has(w)).join(' '))
+      .filter(Boolean);
+    if (phrases.length) {
+      out.keywords = uniq(phrases).slice(0, 20);
+      out.seniority = uniq(out.seniority);
+      out.exclude_keywords = uniq(out.exclude_keywords);
+      return out;
+    }
+  }
   const specific = uniq(words.filter((w) => !GENERIC.has(w)));
   const generic = uniq(words.filter((w) => GENERIC.has(w)));
   if (specific.length === 0) {
