@@ -75,6 +75,8 @@ export interface Config {
   webhookTimeoutMs: number;
   /** If set, GET /metrics requires "Authorization: Bearer <token>". */
   metricsToken: string | null;
+  /** Password for /stats (HTTP Basic, any username, or a Bearer token). Falls back to metricsToken; unset hides the page. */
+  statsToken: string | null;
   /** Served at /.well-known/mcp-registry-auth to prove domain ownership to the MCP Registry ("v=MCPv1; k=ed25519; p=..."). */
   mcpRegistryAuth: string | null;
 }
@@ -130,6 +132,7 @@ export function loadConfig(): Config {
 
     webhookTimeoutMs: int('WEBHOOK_TIMEOUT_MS', 10_000),
     metricsToken: process.env.METRICS_TOKEN || null,
+    statsToken: process.env.STATS_TOKEN || process.env.METRICS_TOKEN || null,
     mcpRegistryAuth: process.env.MCP_REGISTRY_AUTH || null,
   };
 }

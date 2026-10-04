@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { loadStats } from '../src/services/usage.js';
 import { loadConfig } from '../src/config.js';
 import { createPool, migrate, type Db } from '../src/db.js';
 import { createHmac } from 'node:crypto';
@@ -124,6 +125,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
       hostMinSpacingMs: 0,
       maxWatchesPerClientPerHost: 100,
       maxResourcesPerHost: 100,
+      statsToken: 'test-stats-token',
     };
     db = createPool(DATABASE_URL!);
     await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
@@ -140,7 +142,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   });
 
   beforeEach(async () => {
-    await db.query('TRUNCATE clients, resources, snapshots, changes, watches, host_leases, webhook_deliveries, rate_limits CASCADE');
+    await db.query('TRUNCATE clients, resources, snapshots, changes, watches, host_leases, webhook_deliveries, rate_limits, usage_daily, counts_daily CASCADE');
     site.hooks = [];
     site.hookStatus = 200;
   });
@@ -185,6 +187,56 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(text).toContain('watchtower_mcp_initialize_total{client="claude-code",ref="claude-plugin"} 1');
     expect(text).toContain('watchtower_clients_created_7d{source="smithery"} 1');
     expect(text).toContain('watchtower_clients_created_7d{source="none"} 1');
+  });
+
+  it('counts users, tool calls and page views, and shows them on /stats behind a password', async () => {
+    const chrome = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36';
+    await app.inject({ url: '/', headers: { 'user-agent': chrome } });
+    await app.inject({ url: '/', headers: { 'user-agent': chrome } });
+    await app.inject({ url: '/llms.txt', headers: { 'user-agent': 'Mozilla/5.0 (compatible; ClaudeBot/1.0; +claudebot@anthropic.com)' } });
+    await app.inject({ url: '/robots.txt', headers: { 'user-agent': 'curl/8.7.1' } });
+    await app.inject({ url: '/nope', headers: { 'user-agent': chrome } }); // 404s are not counted
+
+    const token = await newToken();
+    await api('GET', '/v1/watches', token);
+    await api('GET', '/v1/changes', token);
+    await api('GET', '/v1/changes', token);
+    const mcp = new McpClient({ name: 'cursor', version: '1.0.0' });
+    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    await mcp.callTool({ name: 'list_watches', arguments: { client_token: token } });
+    await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } }); // provisions a second user
+    await mcp.close();
+
+    const { rows } = await db.query<{ tool: string; via: string; calls: number }>('SELECT tool, via, calls FROM usage_daily ORDER BY tool, via');
+    expect(rows).toEqual([
+      { tool: 'get_changes', via: 'rest', calls: 2 },
+      { tool: 'list_watches', via: 'mcp', calls: 1 },
+      { tool: 'list_watches', via: 'rest', calls: 1 },
+      { tool: 'watch_jobs', via: 'mcp', calls: 1 },
+    ]);
+    const counts = (await db.query<{ metric: string; dim: string; n: number }>('SELECT metric, dim, n FROM counts_daily ORDER BY metric, dim')).rows;
+    expect(counts).toHaveLength(4);
+    expect(counts).toEqual(
+      expect.arrayContaining([
+        { metric: 'mcp_connect', dim: 'cursor', n: 1 },
+        { metric: 'page_view', dim: '/llms.txt|ai', n: 1 },
+        { metric: 'page_view', dim: '/robots.txt|other', n: 1 },
+        { metric: 'page_view', dim: '/|browser', n: 2 },
+      ]),
+    );
+
+    expect((await app.inject({ url: '/stats' })).statusCode).toBe(401);
+    expect((await app.inject({ url: '/stats', headers: { authorization: `Basic ${Buffer.from('me:wrong').toString('base64')}` } })).statusCode).toBe(401);
+    const page = await app.inject({ url: '/stats', headers: { authorization: `Basic ${Buffer.from('me:test-stats-token').toString('base64')}` } });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers['cache-control']).toBe('no-store');
+    const stats = await loadStats(ctx);
+    expect(stats.kpis).toMatchObject({ activeToday: 2, newToday: 2, callsToday: 5, peopleViewsToday: 2 });
+    expect(stats.dailyActive).toHaveLength(30);
+    expect(stats.dailyActive.at(-1)).toBe(2);
+    expect(stats.mcpClients).toEqual([{ client: 'cursor', d7: 1, d30: 1 }]);
+    expect(page.body).toContain('Daily active users');
+    expect(page.body).toContain('<td>get_changes</td>');
   });
 
   it('requires a valid token', async () => {

@@ -6,6 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { authenticate, createClient, type Client, type ClientOrigin } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
+import { recordUse } from '../services/usage.js';
 import { SENIORITIES } from '../extract/types.js';
 import { ackChanges, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
 
@@ -67,14 +68,20 @@ export interface McpRequestContext {
 export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }: McpRequestContext): McpServer {
   const server = new McpServer({ name: 'watchtower', version: '0.1.0' }, { instructions: SERVER_INSTRUCTIONS });
 
-  const auth = (argToken?: string): Promise<Client> => authenticate(ctx, argToken ?? headerToken);
+  /** Authenticates the caller and records the call in the usage history. */
+  const auth = async (tool: string, argToken?: string): Promise<Client> => {
+    const client = await authenticate(ctx, argToken ?? headerToken);
+    await recordUse(ctx, client.id, tool, 'mcp');
+    return client;
+  };
 
   /** For watch creation: fall back to provisioning an anonymous client so agents can start with zero setup. */
   const authOrProvision = async (argToken?: string): Promise<{ client: Client; newToken?: string }> => {
     const token = argToken ?? headerToken;
-    if (token) return { client: await auth(argToken) };
+    if (token) return { client: await auth('watch_jobs', argToken) };
     if (!(await allowProvision())) throw new AppError(429, 'RATE_LIMITED', 'too many anonymous clients created from this address; reuse your existing token');
     const { client, token: newToken } = await createClient(ctx, origin);
+    await recordUse(ctx, client.id, 'watch_jobs', 'mcp');
     return { client, newToken };
   };
 
@@ -163,7 +170,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
     },
     async (args) => {
       try {
-        return ok(await getChanges(ctx, await auth(args.client_token), args));
+        return ok(await getChanges(ctx, await auth('get_changes', args.client_token), args));
       } catch (err) {
         return fail(err);
       }
@@ -180,7 +187,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
     },
     async (args) => {
       try {
-        return ok(await listWatches(ctx, await auth(args.client_token)));
+        return ok(await listWatches(ctx, await auth('list_watches', args.client_token)));
       } catch (err) {
         return fail(err);
       }
@@ -199,7 +206,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
     },
     async (args) => {
       try {
-        return ok(await getWatch(ctx, await auth(args.client_token), args.watch_id));
+        return ok(await getWatch(ctx, await auth('get_watch', args.client_token), args.watch_id));
       } catch (err) {
         return fail(err);
       }
@@ -222,7 +229,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
     },
     async (args) => {
       try {
-        return ok(await ackChanges(ctx, await auth(args.client_token), args));
+        return ok(await ackChanges(ctx, await auth('ack_changes', args.client_token), args));
       } catch (err) {
         return fail(err);
       }
@@ -239,7 +246,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
     },
     async (args) => {
       try {
-        return ok(await deleteWatch(ctx, await auth(args.client_token), args.watch_id));
+        return ok(await deleteWatch(ctx, await auth('delete_watch', args.client_token), args.watch_id));
       } catch (err) {
         return fail(err);
       }

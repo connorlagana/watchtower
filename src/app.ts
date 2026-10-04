@@ -3,11 +3,14 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerApiRoutes } from './api/routes.js';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
+import { timingSafeEqual } from 'node:crypto';
 import { buildMcpServer } from './mcp/server.js';
 import { bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
 import { metrics, renderMetrics } from './services/metrics.js';
 import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
+import { agentClass, countDaily, loadStats } from './services/usage.js';
+import { statsPage } from './web/stats.js';
 import { homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
@@ -27,6 +30,15 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   app.addHook('onSend', async (_req, reply) => {
     reply.header('x-content-type-options', 'nosniff');
     reply.header('referrer-policy', 'no-referrer');
+  });
+
+  // Daily view counts for the public pages, split into people, AI assistants and other bots. Nothing per visitor is kept.
+  const countedPages = new Set(['/', '/llms.txt', '/privacy', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
+  app.addHook('onResponse', async (req, reply) => {
+    const path = req.url.split('?')[0]!;
+    if (req.method === 'GET' && reply.statusCode === 200 && countedPages.has(path)) {
+      await countDaily(ctx, 'page_view', `${path}|${agentClass(req.headers['user-agent'])}`);
+    }
   });
 
   app.setErrorHandler((err: Error & { statusCode?: number; code?: string }, req, reply) => {
@@ -65,6 +77,24 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
     return reply.type('text/plain; version=0.0.4').send(await renderMetrics(db));
   });
 
+  // --- usage stats (operator only) -------------------------------------------
+  if (config.statsToken) {
+    const expected = Buffer.from(config.statsToken);
+    const authorized = (header: string | undefined) => {
+      const m = /^(Basic|Bearer)\s+(\S+)$/i.exec(header ?? '');
+      if (!m) return false;
+      const given = Buffer.from(m[1]!.toLowerCase() === 'basic' ? Buffer.from(m[2]!, 'base64').toString().replace(/^[^:]*:/, '') : m[2]!);
+      return given.length === expected.length && timingSafeEqual(given, expected);
+    };
+    app.get('/stats', async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      if (!authorized(req.headers.authorization)) {
+        return reply.code(401).header('www-authenticate', 'Basic realm="Watchtower stats", charset="UTF-8"').type('text/plain').send('Log in with any username and the STATS_TOKEN as the password.');
+      }
+      return reply.type('text/html; charset=utf-8').send(statsPage(await loadStats(ctx)));
+    });
+  }
+
   // --- REST ------------------------------------------------------------------
   await registerApiRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour });
 
@@ -81,6 +111,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
       const info = body.params?.clientInfo;
       const client = typeof info?.name === 'string' ? info.name.toLowerCase().replace(/[^a-z0-9._ -]/g, '').slice(0, 40) || 'unknown' : 'unknown';
       metrics.mcpInitialize.inc({ client, ref: origin.source ?? 'none' });
+      await countDaily(ctx, 'mcp_connect', client);
       req.log.info({ mcp_client: client, mcp_client_version: typeof info?.version === 'string' ? info.version.slice(0, 40) : undefined, ref: origin.source }, 'mcp initialize');
     }
     const server = buildMcpServer(ctx, { headerToken: bearerToken(req.headers.authorization), allowProvision: () => allowProvision(req.ip), origin });

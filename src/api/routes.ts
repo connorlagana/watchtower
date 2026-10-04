@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authenticate, bearerToken, clientOrigin, createClient } from '../services/clients.js';
+import { recordUse } from '../services/usage.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { SENIORITIES } from '../extract/types.js';
 import { ackChanges, checkNow, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
@@ -55,7 +56,12 @@ function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
 }
 
 export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { clientCreationPerHour: number }) {
-  const auth = (req: FastifyRequest) => authenticate(ctx, bearerToken(req.headers.authorization));
+  /** Authenticates the caller and records the call in the usage history, under the matching MCP tool's name. */
+  const auth = async (req: FastifyRequest, tool: string) => {
+    const client = await authenticate(ctx, bearerToken(req.headers.authorization));
+    await recordUse(ctx, client.id, tool, 'rest');
+    return client;
+  };
 
   app.post(
     '/v1/clients',
@@ -73,7 +79,7 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
   );
 
   app.post('/v1/watches', async (req, reply) => {
-    const client = await auth(req);
+    const client = await auth(req, 'watch_jobs');
     const { type: _type, url, urls, ...body } = parse(createWatchBody, req.body);
     reply.code(201);
     if (urls) return createWatches(ctx, client, { ...body, urls });
@@ -81,25 +87,25 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
     return createSearchWatch(ctx, client, body);
   });
 
-  app.get('/v1/watches', async (req) => listWatches(ctx, await auth(req)));
+  app.get('/v1/watches', async (req) => listWatches(ctx, await auth(req, 'list_watches')));
 
-  app.get<{ Params: { id: string } }>('/v1/watches/:id', async (req) => getWatch(ctx, await auth(req), req.params.id));
+  app.get<{ Params: { id: string } }>('/v1/watches/:id', async (req) => getWatch(ctx, await auth(req, 'get_watch'), req.params.id));
 
-  app.delete<{ Params: { id: string } }>('/v1/watches/:id', async (req) => deleteWatch(ctx, await auth(req), req.params.id));
+  app.delete<{ Params: { id: string } }>('/v1/watches/:id', async (req) => deleteWatch(ctx, await auth(req, 'delete_watch'), req.params.id));
 
   app.post<{ Params: { id: string } }>(
     '/v1/watches/:id/check',
     { config: { limit: { name: 'check_now', max: 10, windowSeconds: 60 } } },
-    async (req) => checkNow(ctx, await auth(req), req.params.id),
+    async (req) => checkNow(ctx, await auth(req, 'check_now'), req.params.id),
   );
 
   app.get('/v1/changes', async (req) => {
     const q = parse(changesQuery, req.query);
-    return getChanges(ctx, await auth(req), q);
+    return getChanges(ctx, await auth(req, 'get_changes'), q);
   });
 
   app.post('/v1/changes/ack', async (req) => {
     const body = parse(ackBody, req.body);
-    return ackChanges(ctx, await auth(req), body);
+    return ackChanges(ctx, await auth(req, 'ack_changes'), body);
   });
 }

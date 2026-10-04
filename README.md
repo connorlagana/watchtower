@@ -235,6 +235,10 @@ A search watch has no resource of its own. It reads the same change events, from
 - gauges for active watches/resources, search watches, directory boards and how many are overdue, failing and blocked resources, and pending webhooks;
 - where agents come from: `watchtower_mcp_initialize_total` by the MCP client name an agent reports (`claude-code`, `cursor`, ...), and `watchtower_clients_created_7d` by the `?ref=` tag on the URL a client was created through. Each listing and install path hands out its own tag (`/mcp?ref=registry`, `?ref=claude-plugin`, `?ref=cursor`, ...); `clients.source` and `clients.user_agent` keep it per client.
 
+### Usage stats
+
+`/stats` shows users, daily active users, new users, tool calls, page views and where users come from, as charts and tables. Log in with any username and `STATS_TOKEN` (or `METRICS_TOKEN`) as the password; with neither set the page is off. A user is one anonymous client token. The history lives in `usage_daily` (one row per client, UTC day, tool and interface) and `counts_daily` (page views by people, AI assistants and other bots, and MCP connections by app name), kept for 400 days. Nothing per visitor is stored for page views.
+
 ### Listing in the MCP Registry
 
 [server.json](server.json) is the registry entry. The `lat.watchtower/*` namespace is proven by HTTP: set `MCP_REGISTRY_AUTH` to the public-key record and the app serves it at `/.well-known/mcp-registry-auth`. Then, with the matching private key:
