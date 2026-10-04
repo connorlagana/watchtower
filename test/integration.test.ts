@@ -169,6 +169,14 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(privacy.statusCode).toBe(200);
     expect(privacy.body).toContain('only a SHA-256 hash of the token is stored');
     expect(home.body).toContain('href="/privacy"');
+    expect(home.body).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
+    const docs = await app.inject({ url: '/docs' });
+    expect(docs.statusCode).toBe(200);
+    expect(docs.body).toContain('<h2>Search watches (no URL)</h2>');
+    const font = await app.inject({ url: '/fonts/atkinson-hyperlegible-next.woff2' });
+    expect(font.statusCode).toBe(200);
+    expect(font.headers['content-type']).toBe('font/woff2');
+    expect((await app.inject({ url: '/fonts/..%2Fpackage.json' })).statusCode).toBe(404);
     // Not configured in tests, so not served.
     expect((await app.inject({ url: '/.well-known/mcp-registry-auth' })).statusCode).toBe(404);
   });

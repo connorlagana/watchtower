@@ -4,6 +4,7 @@ import { registerApiRoutes } from './api/routes.js';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { buildMcpServer } from './mcp/server.js';
 import { bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
@@ -11,7 +12,7 @@ import { metrics, renderMetrics } from './services/metrics.js';
 import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
 import { agentClass, countDaily, loadStats } from './services/usage.js';
 import { statsPage } from './web/stats.js';
-import { homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
+import { docsPage, FONT_FILES, homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
   logger?: boolean;
@@ -56,6 +57,13 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   const base = config.publicBaseUrl;
   const site = { maxWatches: config.maxWatchesPerClient, watchTtlDays: config.watchTtlDays };
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homepage(base, site)));
+  app.get('/docs', async (_req, reply) => reply.type('text/html; charset=utf-8').send(docsPage(base, site)));
+  const fonts = new Map(FONT_FILES.map((f) => [f, readFileSync(new URL(`../public/fonts/${f}`, import.meta.url))]));
+  app.get<{ Params: { file: string } }>('/fonts/:file', { config: { limit: false } }, async (req, reply) => {
+    const font = fonts.get(req.params.file);
+    if (!font) throw new AppError(404, 'NOT_FOUND', 'no such font');
+    return reply.type('font/woff2').header('cache-control', 'public, max-age=2592000').send(font);
+  });
   app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(privacyPage(base, site)));
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
   app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
