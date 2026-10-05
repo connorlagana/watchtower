@@ -11,7 +11,7 @@ import { extractHtml } from './html.js';
 import { collectIcims, resolveIcims, searchUrlFor } from './icims.js';
 import { extractJsonLd, parseJsonLdBlocks } from './jsonld.js';
 import type { AdapterName, Extraction, JobItem, Salary } from './types.js';
-import { collectWorkday, pageBody, resolveWorkday } from './workday.js';
+import { collectWorkday, pageBody, resolveWorkday, siteUrlFor } from './workday.js';
 
 export interface ResolvedSource {
   adapter: AdapterName;
@@ -302,6 +302,32 @@ export function companyFromBoard(adapter: AdapterName, fetchUrl: string): string
     /* keep the raw slug */
   }
   return text.replace(/[-_.]+/g, ' ').trim().replace(/\b[a-z]/g, (c) => c.toUpperCase()) || undefined;
+}
+
+/** The public page of a board, from the URL it is fetched from: the address a person opens, and that watch_jobs accepts as url. */
+export function boardPageUrl(adapter: AdapterName, fetchUrl: string): string {
+  const slug = BOARD_SLUG[adapter]?.exec(fetchUrl)?.[1];
+  const eu = /\.eu\./.test(new URL(fetchUrl).hostname);
+  switch (adapter) {
+    case 'greenhouse':
+      return `https://job-boards${eu ? '.eu' : ''}.greenhouse.io/${slug}`;
+    case 'lever':
+      return `https://jobs${eu ? '.eu' : ''}.lever.co/${slug}`;
+    case 'ashby':
+      return `https://jobs.ashbyhq.com/${slug}`;
+    case 'workable':
+      return `https://apply.workable.com/${slug}`;
+    case 'smartrecruiters':
+      return `https://jobs.smartrecruiters.com/${slug}`;
+    case 'recruitee':
+      return `https://${slug}.recruitee.com/`;
+    case 'workday':
+      return siteUrlFor(fetchUrl);
+    case 'icims':
+      return `${new URL(fetchUrl).origin}/jobs`;
+    default:
+      return fetchUrl;
+  }
 }
 
 /** Results across many boards are only useful when each job says whose it is. */

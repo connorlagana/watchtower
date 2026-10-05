@@ -63,6 +63,8 @@ export interface Config {
   trustProxy: boolean;
   rateLimitPerMinute: number;
   clientCreationPerHour: number;
+  /** search_jobs calls per address per minute; each one scans every monitored board's open jobs. */
+  searchPerMinute: number;
 
   /** Monitor the built-in directory of boards so search watches (no URL) have something to match. */
   indexEnabled: boolean;
@@ -124,6 +126,7 @@ export function loadConfig(): Config {
     trustProxy: bool('TRUST_PROXY', false),
     rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
     clientCreationPerHour: int('CLIENT_CREATION_PER_HOUR', 10),
+    searchPerMinute: int('SEARCH_PER_MINUTE', 20),
 
     indexEnabled: bool('INDEX_ENABLED', true),
     indexCheckIntervalSeconds: int('INDEX_CHECK_INTERVAL_SECONDS', 4 * 3600),

@@ -1,13 +1,13 @@
 ---
 name: job-watch
-description: Create and manage Watchtower job watches, inspect current matches, and summarize new job postings. Use for watchtower.lat requests, persistent job alerts, or changes in existing job watches. Does not monitor arbitrary web pages or submit applications.
+description: Search jobs open now, create and manage Watchtower job watches, inspect current matches, and summarize new job postings. Use for watchtower.lat requests, persistent job alerts, or changes in existing job watches. Does not monitor arbitrary web pages or submit applications.
 ---
 
 # Watchtower job monitoring
 
 Use the Watchtower MCP connection at https://watchtower.lat/mcp. Its supported tools are
-`watch_jobs`, `list_watches`, `get_watch`, `get_changes`, `ack_changes`, and `delete_watch`.
-Inspect the available tool schema when forming calls. Do not invent `search_jobs` or `watch_url`.
+`search_jobs`, `list_companies`, `watch_jobs`, `list_watches`, `get_watch`, `get_changes`, `ack_changes`,
+and `delete_watch`. Inspect the available tool schema when forming calls. Do not invent `watch_url`.
 If the connection is unavailable, explain that the plugin's MCP connection must be enabled.
 
 ## Preserve the client's identity
@@ -31,9 +31,13 @@ On authentication failure, recover the existing connection rather than silently 
 ## Start or reuse a watch
 
 An explicit request to watch, monitor, or alert authorizes creating the corresponding watch.
-For a one-time search, use `get_watch` if a suitable watch already exists. Otherwise explain
-that this service searches by creating a persistent watch and ask whether the user wants one;
-do not silently turn a one-time search into monitoring.
+For a one-time search ("show me the current iOS jobs in Austin"), call `search_jobs` with the
+user's criteria as `query`. It is read-only, needs no token, and creates nothing. Report `total`,
+summarize the best matches, and page with `offset: next_offset` if the user wants more. Offer a
+watch if they want to hear about new postings; do not silently turn a one-time search into monitoring.
+
+To check whether a company is covered, call `list_companies` with its name. If it is missing,
+watching its board or careers page by `url` adds it to the directory.
 
 With existing authentication, inspect `list_watches` and reuse a watch whose scope and filters
 match. For a new watch, pass the user's criteria as `query` (at most 500 characters). Omit
@@ -68,7 +72,7 @@ Zero current matches does not mean the watch failed or that no such jobs exist a
 
 ## Read current jobs or changes
 
-Use `get_watch(watch_id)` for what is open now. For what is new, resolve the requested watch
+Use `get_watch(watch_id)` for what is open now on an existing watch, or `search_jobs` without one. For what is new, resolve the requested watch
 with `list_watches` when needed and call `get_changes` with the existing identity.
 
 For previews and reports, use `peek=true` to avoid consuming unread updates before delivery.

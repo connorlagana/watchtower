@@ -2,6 +2,7 @@
  * Homepage/docs, llms.txt and /.well-known/watchtower.json.
  * Everything is generated from the base URL so self-hosted copies are correct.
  */
+import type { Company } from '../services/companies.js';
 
 export const TAGLINE = 'Tech job monitoring for AI agents. Say what you are looking for once and get only the new postings that match, from the job boards of tech companies and startups, as structured JSON.';
 
@@ -25,6 +26,14 @@ export const TOOLS = [
       `Describe the jobs you want in query ("${EXAMPLE_QUERY}") and get every new matching posting from all monitored boards. ` +
       `Or pass url / urls to follow specific boards on ${PLATFORMS.join(', ')}, or any careers page with schema.org JobPosting (JOB_ADDED/JOB_REMOVED/JOB_UPDATED). ` +
       `Explicit filters: ${FILTERS.join(', ')}.`,
+  },
+  {
+    name: 'search_jobs',
+    summary: 'One-off, read-only: the jobs open right now that match a query or filters, across every monitored board, newest first and paged. No token, nothing saved.',
+  },
+  {
+    name: 'list_companies',
+    summary: 'The companies whose boards every search covers, with board URLs and open-job counts. Pass query to check one ("stripe"). No token.',
   },
   { name: 'get_changes', summary: 'Fetch only the job changes since your last call. Empty list = nothing new.' },
   { name: 'ack_changes', summary: 'Acknowledge a cursor after get_changes(peek=true), for at-least-once processing.' },
@@ -133,6 +142,46 @@ export function privacyPage(base: string, info: SiteInfo): string {
   );
 }
 
+const PLATFORM_NAMES: Record<string, string> = {
+  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workable: 'Workable', smartrecruiters: 'SmartRecruiters', recruitee: 'Recruitee', workday: 'Workday', icims: 'iCIMS',
+};
+
+/** Every company in the directory, with a filter box. Search watches and search_jobs cover exactly these. */
+export function companiesPage(companies: Company[]): string {
+  const jobs = companies.reduce((n, c) => n + (c.open_jobs ?? 0), 0);
+  const rows = companies
+    .map(
+      (c) =>
+        `<tr data-n="${esc(`${c.name} ${c.board_url}`.toLowerCase())}"><td><a href="${esc(c.board_url)}" rel="nofollow noopener">${esc(c.name)}</a></td>` +
+        `<td class="co__p">${esc(PLATFORM_NAMES[c.platform] ?? c.platform)}</td><td class="co__n">${c.open_jobs === null ? '…' : c.open_jobs.toLocaleString('en-US')}</td></tr>`,
+    )
+    .join('\n');
+  return page(
+    'Watchtower companies',
+    `<h1>Companies</h1>
+  <p class="muted">The ${companies.length.toLocaleString('en-US')} tech companies and startups whose job boards Watchtower checks, with ${jobs.toLocaleString('en-US')} jobs open at the last check. Every search covers all of them, and every role they post, not only engineering.</p>
+  <p>Missing one? Ask your agent to watch its job board or careers page by URL (<code>watch_jobs</code> with <code>url</code>). Supported boards then stay on this list for everyone. Agents can read the list with the <code>list_companies</code> tool or <code>GET /v1/companies?q=</code>.</p>
+  <div class="co__bar"><input id="co-q" type="search" placeholder="Filter companies" aria-label="Filter companies" autocomplete="off"><span id="co-count" class="co__count">${companies.length.toLocaleString('en-US')} shown</span></div>
+  <table class="co">
+    <thead><tr><th scope="col">Company</th><th scope="col" class="co__p">Platform</th><th scope="col" class="co__n">Open jobs</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>`,
+    {
+      prose: true,
+      script: `
+  const q = document.getElementById('co-q'), count = document.getElementById('co-count'), rows = [...document.querySelectorAll('tr[data-n]')];
+  q.addEventListener('input', () => {
+    const t = q.value.trim().toLowerCase();
+    let n = 0;
+    for (const r of rows) { const show = !t || r.dataset.n.includes(t); r.hidden = !show; if (show) n++; }
+    count.textContent = n.toLocaleString('en-US') + ' shown';
+  });`,
+    },
+  );
+}
+
 export function robotsTxt(base: string): string {
   return `User-agent: *
 Allow: /
@@ -222,9 +271,16 @@ them only about what is new. Keep the token the first call returns; it is how yo
   tech company and startup boards plus every board any client watches by URL. To cover a company that is missing, watch its
   board URL (or its careers page, if that links to a supported board); it then stays covered for everyone.
 - The directory is tech companies and startups. Every role they post is covered (engineering, design, product, sales, …);
-  employers outside tech are covered only if someone watches their board.
+  employers outside tech are covered only if someone watches their board. The full list is at ${base}/companies; agents can
+  check it with list_companies (or \`GET ${base}/v1/companies?q=stripe\`).
 - Pay and experience come from what each posting states. Many postings state neither; those are still reported (without a
   \`salary\` / \`experience_years\` field) unless you pass \`include_unknown: false\`.
+
+## One-off searches
+
+- To answer "what is open right now" without creating a watch, call search_jobs (or \`POST ${base}/v1/jobs/search\`) with the
+  same \`query\` and filters. It needs no token, saves nothing, and returns \`interpreted\`, \`total\`, \`jobs\` (newest first,
+  \`limit\` up to 100) and \`next_offset\` for the next page. Create a watch when the person wants to hear about new postings.
 
 ## Supported sources
 
@@ -261,6 +317,7 @@ ${TOOLS.map((t) => `- ${t.name}: ${t.summary}`).join('\n')}
 ## REST quickstart
 
 \`\`\`
+curl -X POST ${base}/v1/jobs/search -H "content-type: application/json" -d '{"query":"iOS jobs in Austin, max 6 years of experience"}'
 curl -X POST ${base}/v1/clients
 curl -X POST ${base}/v1/watches -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \\
   -d '{"query":"${EXAMPLE_QUERY}"}'
@@ -384,6 +441,7 @@ ${main}
     <nav aria-label="Footer">
       <a href="/#install">Connect</a>
       <a href="/docs">Docs</a>
+      <a href="/companies">Companies</a>
       <a href="/#faq">FAQ</a>
       <a href="/llms.txt">/llms.txt</a>
       <a href="/.well-known/watchtower.json">/.well-known/watchtower.json</a>
@@ -749,6 +807,19 @@ const STYLES = `
   .prose pre { margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .prose ul { padding-left: 20px; }
   .prose a { color: var(--accent-text); }
+
+  .co__bar { display:flex; align-items:center; gap: 12px; margin: 32px 0 8px; }
+  .co__bar input { flex: 1; min-width: 0; font: 16px var(--sans); color: var(--fg); background: var(--panel); border: 0; border-radius: 10px; padding: 0 14px; height: 42px; box-shadow: var(--shadow); outline: none; }
+  .co__bar input:focus { box-shadow: var(--shadow), 0 0 0 2px var(--accent-text); }
+  .co__count { font: 12px var(--mono); color: var(--faint); white-space: nowrap; }
+  .co { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .co th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 10px 8px 8px 0; border-bottom: 1px solid var(--line); }
+  .co td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--line-faint); overflow-wrap: anywhere; }
+  .co a { text-decoration: none; }
+  .co a:hover { text-decoration: underline; }
+  .co__p { color: var(--muted); }
+  .co .co__n { text-align: right; padding-right: 0; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  @media (max-width: 560px) { .co .co__p { display: none; } }
 `;
 
 /** Highlights the comments and quoted strings of a shell snippet that is already HTML-escaped. */
@@ -833,7 +904,7 @@ const FAQ: [string, string][] = [
   ['Is this a crawler or a scraper?', 'Neither in the usual sense. Supported platforms are read through their own public job-board endpoints, and other careers pages through the schema.org <code>JobPosting</code> markup they publish. Watchtower respects robots.txt and never bypasses CAPTCHAs, logins, paywalls or anti-bot systems.'],
   ['Which agents does it work in?', 'Any MCP client (Claude Code, Claude.ai, Claude Desktop, Cursor, VS Code and the rest) over Streamable HTTP, or anything that can make HTTP requests through the REST API.'],
   ['What does it cost?', 'Nothing. Watchtower is free and anonymous: no sign-up, no email, no API key to request. The first <code>watch_jobs</code> call creates a client and returns its token.'],
-  ['Which companies are covered?', 'A built-in directory of tech company and startup boards, from large public companies to seed-stage startups, plus every board anyone watches by URL. Every role they post is covered, not only engineering. To add a missing company, watch its board URL (or its careers page); it then stays covered for everyone.'],
+  ['Which companies are covered?', 'A built-in directory of tech company and startup boards, from large public companies to seed-stage startups, plus every board anyone watches by URL. Every role they post is covered, not only engineering. See the <a href="/companies">full list of companies</a>. To add a missing company, watch its board URL (or its careers page); it then stays covered for everyone.'],
   ['What if a posting does not state pay or experience?', 'Pay and experience come from what each posting states. Postings that state neither are still reported, without those fields, unless you pass <code>include_unknown: false</code>.'],
   ['What if my query is read wrong?', 'The response shows how it was read (<code>interpreted</code>) and the matching jobs open right now. Pass explicit filters to correct it; they override the query.'],
   ['Can it run on a schedule, unattended?', 'Yes: that is the point. Watches are checked on a schedule whether or not your agent is running. Add a <code>webhook_url</code> for a signed POST on every matching change, or use <code>get_changes(peek=true)</code> then <code>ack_changes(cursor)</code> for at-least-once processing.'],

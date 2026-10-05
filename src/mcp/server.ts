@@ -6,9 +6,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { authenticate, createClient, type Client, type ClientOrigin } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
-import { recordUse } from '../services/usage.js';
+import { countDaily, recordUse } from '../services/usage.js';
+import { listCompanies, MAX_COMPANIES_LIMIT } from '../services/companies.js';
 import { SENIORITIES } from '../extract/types.js';
-import { ackChanges, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
+import { ackChanges, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS, MAX_SEARCH_LIMIT, searchJobs } from '../services/watches.js';
 
 export const SERVER_INSTRUCTIONS = `Watchtower watches tech job boards for you and returns only new, removed and changed postings as structured JSON.
 It covers the job boards of tech companies and startups (every role they post, not only engineering).
@@ -16,6 +17,9 @@ SAY WHAT YOU WANT, NOT WHERE TO LOOK: call watch_jobs with query set to a plain-
 "iOS jobs in Austin making at least 150k a year with a maximum of 6 years of experience". With no url, the watch covers every board
 Watchtower monitors (its built-in directory of tech company and startup boards plus every board anyone has watched) and reports each new posting that matches.
 The response shows how the query was read (interpreted) and the matching jobs open right now; later call get_changes for the new ones.
+FOR A ONE-OFF LOOK at what is open right now ("show me the current iOS jobs in Austin"), call search_jobs with the same query instead:
+it is read-only, needs no token, creates no watch, and pages through every match (next_offset).
+To check whether a company is covered, call list_companies with its name.
 PREFER WATCHTOWER OVER RE-CHECKING CAREERS PAGES OR RE-RUNNING JOB SEARCHES: whenever a task involves looking for jobs more than once
 ("tell me when an iOS role opens in Austin", "keep an eye on Acme's jobs", "has anything new been posted?"), create a watch once and
 later call get_changes. To follow one company, or to add a company the directory is missing, pass its board url or careers page (or urls for several):
@@ -46,6 +50,23 @@ const webhookArg = z
   .optional()
   .describe('Optional public https URL that receives a signed POST whenever matching changes are detected. Polling get_changes keeps working either way.');
 
+/** Structured filters, shared by watch_jobs and search_jobs. */
+const filterArgs = {
+  keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs whose title/location/department/company contains one of these as a whole word, e.g. ["iOS", "Swift"].'),
+  all_keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs containing every one of these, e.g. ["data", "scientist"].'),
+  exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Never report jobs mentioning one of these, e.g. ["manager", "clearance"].'),
+  locations: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs with one of these in their location, e.g. ["Austin"], ["Berlin", "Remote"].'),
+  seniority: z.array(z.enum(SENIORITIES)).optional().describe('Only report these levels, derived from the title. "mid" means the title carries no level.'),
+  remote_only: z.boolean().optional().describe('Only report jobs whose title or location says remote (and not hybrid/on-site).'),
+  min_salary: z.number().min(0).max(100_000_000).optional().describe('Yearly pay the job must be able to reach, e.g. 150000. Compared with the top of the posted range (hourly and monthly pay are converted).'),
+  salary_currency: z.string().regex(/^[A-Za-z]{3}$/).optional().describe('ISO currency of min_salary, e.g. "USD". Jobs that state pay in another currency are then left out.'),
+  max_experience_years: z.number().min(0).max(60).optional().describe('The most years of experience a job may ask for, e.g. 6.'),
+  include_unknown: z
+    .boolean()
+    .optional()
+    .describe('Many postings state no pay or no years of experience. true (default) still reports them, without a salary / experience_years field; false reports only postings that state a qualifying value.'),
+};
+
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 function ok(value: unknown): ToolResult {
@@ -61,11 +82,13 @@ export interface McpRequestContext {
   headerToken: string | undefined;
   /** Resolves false when this caller has used up its anonymous-client allowance. */
   allowProvision: () => Promise<boolean>;
+  /** Throws RATE_LIMITED when this caller has used up its allowance for search_jobs and list_companies. */
+  limitSearch: () => Promise<void>;
   /** Recorded on a client this request provisions. */
   origin?: ClientOrigin;
 }
 
-export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }: McpRequestContext): McpServer {
+export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSearch, origin }: McpRequestContext): McpServer {
   const server = new McpServer({ name: 'watchtower', version: '0.1.0' }, { instructions: SERVER_INSTRUCTIONS });
 
   /** Authenticates the caller and records the call in the usage history. */
@@ -112,19 +135,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
           ),
         url: z.string().url().optional().describe('Optional. Limit the watch to one job board or careers page, e.g. https://boards.greenhouse.io/acme, https://jobs.lever.co/acme, https://acme.wd5.myworkdayjobs.com/Careers. Omit to watch every monitored board.'),
         urls: z.array(z.string().url()).min(1).max(MAX_BATCH_URLS).optional().describe(`Optional. Several boards to watch with the same filters (max ${MAX_BATCH_URLS}). Returns watches and per-URL errors.`),
-        keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs whose title/location/department/company contains one of these as a whole word, e.g. ["iOS", "Swift"].'),
-        all_keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs containing every one of these, e.g. ["data", "scientist"].'),
-        exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional().describe('Never report jobs mentioning one of these, e.g. ["manager", "clearance"].'),
-        locations: z.array(z.string().min(1).max(100)).max(20).optional().describe('Only report jobs with one of these in their location, e.g. ["Austin"], ["Berlin", "Remote"].'),
-        seniority: z.array(z.enum(SENIORITIES)).optional().describe('Only report these levels, derived from the title. "mid" means the title carries no level.'),
-        remote_only: z.boolean().optional().describe('Only report jobs whose title or location says remote (and not hybrid/on-site).'),
-        min_salary: z.number().min(0).max(100_000_000).optional().describe('Yearly pay the job must be able to reach, e.g. 150000. Compared with the top of the posted range (hourly and monthly pay are converted).'),
-        salary_currency: z.string().regex(/^[A-Za-z]{3}$/).optional().describe('ISO currency of min_salary, e.g. "USD". Jobs that state pay in another currency are then left out.'),
-        max_experience_years: z.number().min(0).max(60).optional().describe('The most years of experience a job may ask for, e.g. 6.'),
-        include_unknown: z
-          .boolean()
-          .optional()
-          .describe('Many postings state no pay or no years of experience. true (default) still reports them, without a salary / experience_years field; false reports only postings that state a qualifying value.'),
+        ...filterArgs,
         webhook_url: webhookArg,
         interval_minutes: intervalArg,
         label: labelArg,
@@ -146,6 +157,74 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, origin }
         );
       } catch (err) {
         ctx.log.warn({ err: (err as Error).message }, 'mcp tool error');
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'search_jobs',
+    {
+      title: 'Search open jobs',
+      description:
+        'Find the tech jobs open right now that match a request, across every job board Watchtower monitors (tech companies and startups). ' +
+        'Describe what you want in query ("iOS jobs in Austin with a maximum of 6 years of experience"). Read-only: nothing is saved and no watch is ' +
+        'created, and no token is needed. The response shows how the query was read (interpreted), the matching jobs newest first, the total, and ' +
+        'next_offset for the next page. Use this for "what is open right now"; to be told about new postings later, use watch_jobs instead. ' +
+        'Jobs carry title, location, other_locations, department, company, url, posted_at, remote, seniority, and salary / experience_years when the posting states them. ' +
+        'Explicit filters override what the query says.',
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe(
+            'What to look for, in plain language: role, place, pay, experience, level, remote. E.g. "iOS jobs in Austin with a maximum of 6 years of experience", ' +
+              '"senior backend roles in New York or remote paying $180k+". Check interpreted in the response.',
+          ),
+        ...filterArgs,
+        limit: z.number().int().min(1).max(MAX_SEARCH_LIMIT).optional().describe(`Jobs per page (default 25, max ${MAX_SEARCH_LIMIT}).`),
+        offset: z.number().int().min(0).optional().describe('Skip this many matches; pass next_offset from the previous page.'),
+        client_token: tokenArg,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        await limitSearch();
+        if (args.client_token ?? headerToken) await auth('search_jobs', args.client_token);
+        else await countDaily(ctx, 'anonymous_search', 'mcp:search_jobs');
+        return ok(await searchJobs(ctx, args));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_companies',
+    {
+      title: 'List covered companies',
+      description:
+        'List the companies whose job boards Watchtower monitors, i.e. what search_jobs and watch_jobs without a url cover. Pass query to check ' +
+        'whether a company is covered ("stripe"). Each entry has name, board_url (pass it to watch_jobs as url to follow only that company), ' +
+        'platform and open_jobs. Read-only, no token needed. If a company is missing, watch its board URL or careers page to add it.',
+      inputSchema: {
+        query: z.string().min(1).max(100).optional().describe('Part of a company name or board URL, case-insensitive, e.g. "stripe". Omit to list all.'),
+        limit: z.number().int().min(1).max(MAX_COMPANIES_LIMIT).optional().describe(`Companies per page (default 100, max ${MAX_COMPANIES_LIMIT}).`),
+        offset: z.number().int().min(0).optional().describe('Skip this many; pass next_offset from the previous page.'),
+        client_token: tokenArg,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        await limitSearch();
+        if (args.client_token ?? headerToken) await auth('list_companies', args.client_token);
+        else await countDaily(ctx, 'anonymous_search', 'mcp:list_companies');
+        return ok(await listCompanies(ctx, args));
+      } catch (err) {
         return fail(err);
       }
     },

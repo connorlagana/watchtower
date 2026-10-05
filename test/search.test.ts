@@ -76,6 +76,9 @@ describe('parseQuery', () => {
     expect(read('roles in albany new york')).toEqual({ locations: ['albany'] });
     expect(read('designer roles in new york')).toEqual({ keywords: ['designer'], locations: ['new york'] });
     expect(read('node.js roles in kansas city')).toEqual({ keywords: ['node.js'], locations: ['kansas city'] });
+    // A question about what is open now: the asking words are not role words.
+    expect(read('can you show the current jobs for iOS in Austin for max 6 years of experience')).toEqual({ keywords: ['ios'], locations: ['austin'], max_experience_years: 6 });
+    expect(read("what's open right now for staff data engineers in Denver?")).toEqual({ keywords: ['data'], locations: ['denver'], seniority: ['staff'] });
   });
 
   it('reads every prompt the homepage quiz builds back into the choices that built it', () => {

@@ -9,10 +9,11 @@ import { buildMcpServer } from './mcp/server.js';
 import { bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
 import { metrics, renderMetrics } from './services/metrics.js';
-import { clientBucket, hit, registerRateLimits } from './services/rateLimit.js';
+import { clientBucket, enforce, hit, registerRateLimits } from './services/rateLimit.js';
 import { agentClass, countDaily, loadStats } from './services/usage.js';
+import { loadCompanies } from './services/companies.js';
 import { statsPage } from './web/stats.js';
-import { docsPage, FONT_FILES, homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
+import { companiesPage, docsPage, FONT_FILES, homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
   logger?: boolean;
@@ -34,7 +35,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   });
 
   // Daily view counts for the public pages, split into people, AI assistants and other bots. Nothing per visitor is kept.
-  const countedPages = new Set(['/', '/llms.txt', '/privacy', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
+  const countedPages = new Set(['/', '/companies', '/llms.txt', '/privacy', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
   app.addHook('onResponse', async (req, reply) => {
     const path = req.url.split('?')[0]!;
     if (req.method === 'GET' && reply.statusCode === 200 && countedPages.has(path)) {
@@ -63,6 +64,12 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
     const font = fonts.get(req.params.file);
     if (!font) throw new AppError(404, 'NOT_FOUND', 'no such font');
     return reply.type('font/woff2').header('cache-control', 'public, max-age=2592000').send(font);
+  });
+  // The list changes only when boards are checked or added, so one rendering serves every visitor for a few minutes.
+  let companiesHtml: { at: number; html: string } | null = null;
+  app.get('/companies', async (_req, reply) => {
+    if (!companiesHtml || Date.now() - companiesHtml.at > 5 * 60_000) companiesHtml = { at: Date.now(), html: companiesPage(await loadCompanies(ctx)) };
+    return reply.type('text/html; charset=utf-8').header('cache-control', 'public, max-age=300').send(companiesHtml.html);
   });
   app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(privacyPage(base, site)));
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
@@ -108,7 +115,9 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   }
 
   // --- REST ------------------------------------------------------------------
-  await registerApiRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour });
+  // search_jobs scans every monitored board's open jobs and needs no token, so it has its own per-address budget.
+  const searchLimit = { name: 'search', max: config.searchPerMinute, windowSeconds: 60 };
+  await registerApiRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour, searchLimit });
 
   // --- MCP (Streamable HTTP, stateless) ---------------------------------------
   // Tokenless watch_* calls auto-create a client; they draw from the same shared
@@ -126,7 +135,12 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
       await countDaily(ctx, 'mcp_connect', client);
       req.log.info({ mcp_client: client, mcp_client_version: typeof info?.version === 'string' ? info.version.slice(0, 40) : undefined, ref: origin.source }, 'mcp initialize');
     }
-    const server = buildMcpServer(ctx, { headerToken: bearerToken(req.headers.authorization), allowProvision: () => allowProvision(req.ip), origin });
+    const server = buildMcpServer(ctx, {
+      headerToken: bearerToken(req.headers.authorization),
+      allowProvision: () => allowProvision(req.ip),
+      limitSearch: () => enforce(db, clientBucket(req.ip), searchLimit),
+      origin,
+    });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.raw.on('close', () => {
       void transport.close();

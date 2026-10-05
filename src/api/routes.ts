@@ -1,10 +1,27 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authenticate, bearerToken, clientOrigin, createClient } from '../services/clients.js';
-import { recordUse } from '../services/usage.js';
+import { countDaily, recordUse } from '../services/usage.js';
+import type { LimitSpec } from '../services/rateLimit.js';
+import { listCompanies, MAX_COMPANIES_LIMIT } from '../services/companies.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { SENIORITIES } from '../extract/types.js';
-import { ackChanges, checkNow, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS } from '../services/watches.js';
+import { ackChanges, checkNow, createSearchWatch, createWatch, createWatches, deleteWatch, getChanges, getWatch, listWatches, MAX_BATCH_URLS, MAX_SEARCH_LIMIT, searchJobs } from '../services/watches.js';
+
+const filterFields = {
+  // What to look for, in plain language. Read into the filters below; explicit filters win.
+  query: z.string().min(1).max(500).optional(),
+  keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
+  all_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
+  exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
+  locations: z.array(z.string().min(1).max(100)).max(20).optional(),
+  seniority: z.array(z.enum(SENIORITIES)).optional(),
+  remote_only: z.boolean().optional(),
+  min_salary: z.number().min(0).max(100_000_000).optional(),
+  salary_currency: z.string().regex(/^[A-Za-z]{3}$/).optional(),
+  max_experience_years: z.number().min(0).max(60).optional(),
+  include_unknown: z.boolean().optional(),
+};
 
 const createWatchBody = z
   .object({
@@ -12,24 +29,25 @@ const createWatchBody = z
     type: z.literal('jobs').optional(),
     url: z.string().url().max(2048).optional(),
     urls: z.array(z.string().url().max(2048)).min(1).max(MAX_BATCH_URLS).optional(),
-    // What to look for, in plain language. Read into the filters below; explicit filters win.
-    query: z.string().min(1).max(500).optional(),
-    keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
-    all_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
-    exclude_keywords: z.array(z.string().min(1).max(100)).max(20).optional(),
-    locations: z.array(z.string().min(1).max(100)).max(20).optional(),
-    seniority: z.array(z.enum(SENIORITIES)).optional(),
-    remote_only: z.boolean().optional(),
-    min_salary: z.number().min(0).max(100_000_000).optional(),
-    salary_currency: z.string().regex(/^[A-Za-z]{3}$/).optional(),
-    max_experience_years: z.number().min(0).max(60).optional(),
-    include_unknown: z.boolean().optional(),
+    ...filterFields,
     interval_minutes: z.number().int().min(1).max(10080).optional(),
     label: z.string().max(200).optional(),
     webhook_url: z.string().url().max(2048).optional(),
   })
   // Neither url nor urls: a search watch across every monitored board.
   .refine((b) => b.url === undefined || b.urls === undefined, { message: 'pass url or urls, not both' });
+
+const searchBody = z.object({
+  ...filterFields,
+  limit: z.number().int().min(1).max(MAX_SEARCH_LIMIT).optional(),
+  offset: z.number().int().min(0).optional(),
+});
+
+const companiesQuery = z.object({
+  q: z.string().min(1).max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_COMPANIES_LIMIT).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
 
 const ackBody = z.object({
   cursor: z.number().int().min(0),
@@ -55,7 +73,7 @@ function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   return r.data;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { clientCreationPerHour: number }) {
+export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { clientCreationPerHour: number; searchLimit: LimitSpec }) {
   /** Authenticates the caller and records the call in the usage history, under the matching MCP tool's name. */
   const auth = async (req: FastifyRequest, tool: string) => {
     const client = await authenticate(ctx, bearerToken(req.headers.authorization));
@@ -85,6 +103,21 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: Ctx, opts: { 
     if (urls) return createWatches(ctx, client, { ...body, urls });
     if (url) return createWatch(ctx, client, { ...body, url });
     return createSearchWatch(ctx, client, body);
+  });
+
+  // Read-only and tokenless: the jobs open right now that match. A token, if sent, is checked and the call counted for it.
+  app.post('/v1/jobs/search', { config: { limit: opts.searchLimit } }, async (req) => {
+    const body = parse(searchBody, req.body ?? {});
+    if (req.headers.authorization) await auth(req, 'search_jobs');
+    else await countDaily(ctx, 'anonymous_search', 'rest:search_jobs');
+    return searchJobs(ctx, body);
+  });
+
+  app.get('/v1/companies', { config: { limit: opts.searchLimit } }, async (req) => {
+    const { q, ...page } = parse(companiesQuery, req.query);
+    if (req.headers.authorization) await auth(req, 'list_companies');
+    else await countDaily(ctx, 'anonymous_search', 'rest:list_companies');
+    return listCompanies(ctx, { query: q, ...page });
   });
 
   app.get('/v1/watches', async (req) => listWatches(ctx, await auth(req, 'list_watches')));

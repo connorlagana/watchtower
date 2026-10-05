@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { collect, resolveSource } from '../src/extract/adapters.js';
+import { boardPageUrl, collect, resolveSource } from '../src/extract/adapters.js';
+import { BOARDS } from '../src/search/boards.js';
 import { isRemote, seniorityOf } from '../src/extract/classify.js';
 import { computeChanges } from '../src/extract/diff.js';
 import { collectIcims, parseIcimsSearch, parseIcimsSitemap, searchUrlFor } from '../src/extract/icims.js';
@@ -131,5 +132,27 @@ describe('iCIMS', () => {
     const before = { jobs: [{ key: 'job:icims:1', title: 'Backend Engineer', source: 'icims' as const, partial: true }] };
     const after = { jobs: [{ key: 'job:icims:1', title: 'Backend Engineer', location: 'Berlin', source: 'icims' as const }] };
     expect(computeChanges(before, after)).toEqual([]);
+  });
+});
+
+describe('board page URLs', () => {
+  it('gives every board a public page that resolves back to the same board', () => {
+    const boards = [
+      ...BOARDS,
+      'https://job-boards.eu.greenhouse.io/acme',
+      'https://jobs.eu.lever.co/acme',
+      'https://jobs.smartrecruiters.com/Acme',
+      'https://acme.recruitee.com/',
+      'https://acme.wd5.myworkdayjobs.com/en-US/Careers',
+      'https://wd3.myworkdaysite.com/recruiting/acme/External',
+      'https://careers-acme.icims.com/jobs/search',
+    ];
+    for (const url of boards) {
+      const source = resolveSource(url);
+      expect(source.adapter, url).not.toBe('html');
+      expect(resolveSource(boardPageUrl(source.adapter, source.fetchUrl)), url).toEqual(source);
+    }
+    expect(boardPageUrl('greenhouse', 'https://boards-api.greenhouse.io/v1/boards/stripe/jobs')).toBe('https://job-boards.greenhouse.io/stripe');
+    expect(boardPageUrl('lever', 'https://api.lever.co/v0/postings/palantir?mode=json')).toBe('https://jobs.lever.co/palantir');
   });
 });

@@ -242,21 +242,39 @@ async function coverage(ctx: Ctx) {
   };
 }
 
-/** Jobs open right now, on any monitored board, that pass a search watch's filters (newest first). */
-async function searchCurrentJobs(ctx: Ctx, watchId: string, limit: number): Promise<{ jobs: JobItem[]; total: number }> {
+/**
+ * Jobs open right now, on any monitored board, that pass the filters of row `w` (newest first).
+ * `filtersFrom` is SQL yielding that one row: a stored watch, or filters passed as parameters.
+ */
+async function matchingOpenJobs(ctx: Ctx, filtersFrom: string, params: unknown[], limit: number, offset = 0): Promise<{ jobs: JobItem[]; total: number }> {
   const { rows } = await ctx.db.query<{ job: JobItem; total: number }>(
     `SELECT j.job, (count(*) OVER ())::int AS total
-       FROM watches w
+       FROM ${filtersFrom} w
        JOIN resources r ON ${RESOURCE_IS_MONITORED}
        JOIN snapshots s ON s.id = r.current_snapshot_id
       CROSS JOIN LATERAL jsonb_array_elements(s.structured -> 'jobs') AS j(job)
-      WHERE w.id = $1 AND ${jobFilterSql('j.job', jobTextSql('j.job'))}
+      WHERE ${jobFilterSql('j.job', jobTextSql('j.job'))}
       ORDER BY j.job ->> 'posted_at' DESC NULLS LAST, j.job ->> 'key'
-      LIMIT $2`,
-    [watchId, limit],
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset],
   );
+  if (rows.length === 0 && offset > 0) {
+    // Past the end: the window count is gone with the rows, so count separately.
+    const { rows: c } = await ctx.db.query<{ total: number }>(
+      `SELECT count(*)::int AS total
+         FROM ${filtersFrom} w
+         JOIN resources r ON ${RESOURCE_IS_MONITORED}
+         JOIN snapshots s ON s.id = r.current_snapshot_id
+        CROSS JOIN LATERAL jsonb_array_elements(s.structured -> 'jobs') AS j(job)
+        WHERE ${jobFilterSql('j.job', jobTextSql('j.job'))}`,
+      params,
+    );
+    return { jobs: [], total: c[0]?.total ?? 0 };
+  }
   return { jobs: rows.map((r) => r.job), total: rows[0]?.total ?? 0 };
 }
+
+const searchCurrentJobs = (ctx: Ctx, watchId: string, limit: number) => matchingOpenJobs(ctx, '(SELECT * FROM watches WHERE id = $1)', [watchId], limit);
 
 async function presentSearchWatch(ctx: Ctx, row: JoinedRow, opts: { includeCurrent: boolean }, shared?: Awaited<ReturnType<typeof coverage>>) {
   const watch: Record<string, unknown> = { ...presentCommon(ctx, row), resource: null, snapshot: null, coverage: shared ?? (await coverage(ctx)) };
@@ -566,6 +584,51 @@ export async function createSearchWatch(ctx: Ctx, client: Client, input: CreateS
   }
   const watch = await getWatch(ctx, client, watchId, { includeCurrent: true });
   return { ...watch, ...interpretation(query, filters, notes), ...webhookNote(webhookSecret) };
+}
+
+export interface SearchJobsInput extends JobFilters {
+  limit?: number;
+  offset?: number;
+}
+
+export const MAX_SEARCH_LIMIT = 100;
+const MAX_SEARCH_OFFSET = 10_000;
+
+/** The filters of a one-off search, as the single row `w` that jobFilterSql() reads. */
+const SEARCH_FILTERS_FROM = `(SELECT $1::text[] AS keywords, $2::text[] AS all_keywords, $3::text[] AS exclude_keywords, $4::text[] AS locations,
+  $5::text[] AS seniority, $6::boolean AS remote_only, $7::integer AS min_salary, $8::text AS salary_currency,
+  $9::integer AS max_experience_years, $10::boolean AS include_unknown)`;
+
+/**
+ * The jobs open right now, on every monitored board, that match a request.
+ * Read-only: nothing is stored and no watch is created.
+ */
+export async function searchJobs(ctx: Ctx, input: SearchJobsInput) {
+  const { filters, query, notes } = buildFilters(input);
+  if (!hasCriteria(filters)) {
+    throw new AppError(
+      400,
+      'QUERY_TOO_BROAD',
+      'say what to look for in query (e.g. "iOS jobs in Austin making at least 150k"), or pass keywords, locations, seniority, remote_only, min_salary or max_experience_years',
+    );
+  }
+  const limit = Math.min(Math.max(Math.round(input.limit ?? 25), 1), MAX_SEARCH_LIMIT);
+  const offset = Math.min(Math.max(Math.round(input.offset ?? 0), 0), MAX_SEARCH_OFFSET);
+  const f = filters;
+  const params = [f.keywords, f.all_keywords, f.exclude_keywords, f.locations, f.seniority, f.remote_only, f.min_salary, f.salary_currency, f.max_experience_years, f.include_unknown];
+  const [{ jobs, total }, cov] = await Promise.all([matchingOpenJobs(ctx, SEARCH_FILTERS_FROM, params, limit, offset), coverage(ctx)]);
+  const next = offset + jobs.length;
+  return {
+    query,
+    filters,
+    ...(query ? { interpreted: { query, filters, notes, how_to_correct: 'If this reading is wrong, search again with explicit filters; they override the query.' } } : {}),
+    total,
+    offset,
+    next_offset: next < total && next <= MAX_SEARCH_OFFSET ? next : null,
+    jobs,
+    coverage: cov,
+    watch_hint: 'This search is not saved. To be told when new matching jobs are posted, call watch_jobs with the same query and filters, then poll get_changes.',
+  };
 }
 
 export const MAX_BATCH_URLS = 25;

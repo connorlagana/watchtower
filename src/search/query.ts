@@ -122,7 +122,8 @@ const STOPWORDS = new Set(
     'notify alert alerts me us my tell let know when whenever about for the a an with that which who are is be in at of and or to i we want wants looking look need needs get please ' +
     'company companies level levels experience experienced years year hiring there posted post open up comes come appears appear available full time fulltime full-time only just also ' +
     'some based located area anywhere everything regardless board boards it its this these those on by from like such as type types kind kinds ' +
-    'hey hi hello use using via they them you your ones whatever check keep eye').split(' '),
+    'hey hi hello use using via they them you your ones whatever check keep eye ' +
+    'can could would will do does give list see what whats current currently right now today latest recent recently').split(' '),
 );
 
 /** Role nouns that say little on their own: "iOS engineer" should also find "iOS Developer". */
@@ -154,7 +155,8 @@ function roleWords(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[\s,;:|()"“”!?/]+/)
-    .map((w) => w.replace(/^[.'’-]+(?=[^.])|[.'’-]+$/g, (edge, offset: number) => (offset === 0 && edge === '.' ? edge : '')))
+    // "what's", "Apple's": a contraction or possessive is the bare word.
+    .map((w) => w.replace(/['’]s$/, '').replace(/^[.'’-]+(?=[^.])|[.'’-]+$/g, (edge, offset: number) => (offset === 0 && edge === '.' ? edge : '')))
     .filter((w) => w && /[\p{L}\p{N}]/u.test(w) && !STOPWORDS.has(w))
     .map(singular);
 }

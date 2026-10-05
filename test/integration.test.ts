@@ -151,7 +151,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const home = await app.inject({ url: '/' });
     expect(home.body).toContain('Tech job monitoring for AI agents.');
     const wk = await api('GET', '/.well-known/watchtower.json');
-    expect(wk.body.mcp.tools).toEqual(['watch_jobs', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
+    expect(wk.body.mcp.tools).toEqual(['watch_jobs', 'search_jobs', 'list_companies', 'get_changes', 'ack_changes', 'list_watches', 'get_watch', 'delete_watch']);
     const llms = await app.inject({ url: '/llms.txt' });
     expect(llms.body).toMatch(/prefer Watchtower over re-running job searches or re-checking careers pages/i);
     expect(llms.body).toContain('## Search watches (no URL)');
@@ -446,7 +446,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const mcp = new McpClient({ name: 'test', version: '1.0.0' });
     await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
     const { tools } = await mcp.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_watches', 'watch_jobs']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_companies', 'list_watches', 'search_jobs', 'watch_jobs']);
     expect(tools.find((t) => t.name === 'watch_jobs')!.description).toMatch(/INSTEAD OF re-running job searches or re-checking careers pages/);
     // Directories require every tool to say whether it reads, writes or destroys.
     for (const t of tools) {
@@ -660,6 +660,99 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const changes = await call('get_changes', { client_token: created.client_token });
     expect(changes.changes.map((c: any) => c.summary)).toEqual(['New job: Senior iOS Engineer (Austin)']);
     await mcp.close();
+  });
+
+  it('searches the jobs open right now without a token or a watch, and pages through them', async () => {
+    site.jobs = [
+      { id: 'a1', title: 'iOS Engineer', location: 'Austin', salary: [160_000, 190_000], description: 'You have 4+ years of experience building iOS apps.' },
+      { id: 'a2', title: 'Principal iOS Engineer', location: 'Austin', description: '10+ years of experience in mobile engineering.' },
+      { id: 'a3', title: 'Android Engineer', location: 'Austin' },
+    ];
+    site.board2 = [
+      { id: 'b1', title: 'iOS Developer', location: 'Austin, TX' },
+      { id: 'b2', title: 'Senior iOS Engineer', location: 'Denver' },
+      { id: 'b3', title: 'Producer, Game Studios', location: 'Austin' },
+    ];
+    await syncBoardIndex(ctx, [`${origin}/careers`, `${origin}/board2`]);
+    await checkAll();
+    const query = 'current jobs for iOS in Austin for max 6 years of experience';
+
+    const all = await api('POST', '/v1/jobs/search', undefined, { query });
+    expect(all.status, JSON.stringify(all.body)).toBe(200);
+    expect(all.body.interpreted.filters).toMatchObject({ keywords: ['ios'], locations: ['austin'], max_experience_years: 6 });
+    expect(all.body).toMatchObject({ total: 2, offset: 0, next_offset: null, coverage: { boards: 2 } });
+    expect(all.body.jobs.map((j: any) => j.title).sort()).toEqual(['iOS Developer', 'iOS Engineer']);
+
+    const page1 = await api('POST', '/v1/jobs/search', undefined, { query, limit: 1 });
+    expect(page1.body).toMatchObject({ total: 2, next_offset: 1 });
+    const page2 = await api('POST', '/v1/jobs/search', undefined, { query, limit: 1, offset: page1.body.next_offset });
+    expect(page2.body).toMatchObject({ total: 2, next_offset: null });
+    expect([...page1.body.jobs, ...page2.body.jobs].map((j: any) => j.title).sort()).toEqual(['iOS Developer', 'iOS Engineer']);
+    expect((await api('POST', '/v1/jobs/search', undefined, { query, offset: 50 })).body).toMatchObject({ total: 2, jobs: [], next_offset: null });
+
+    // Explicit filters win; too broad a request is refused.
+    expect((await api('POST', '/v1/jobs/search', undefined, { query, include_unknown: false })).body.jobs.map((j: any) => j.title)).toEqual(['iOS Engineer']);
+    expect((await api('POST', '/v1/jobs/search', undefined, {})).body.error).toBe('QUERY_TOO_BROAD');
+    expect((await api('POST', '/v1/jobs/search', undefined, { query, limit: 1000 })).body.error).toBe('VALIDATION_ERROR');
+
+    // Nothing is created; a token, when sent, is checked and the call counted for it.
+    expect((await db.query('SELECT count(*)::int AS n FROM watches')).rows[0].n).toBe(0);
+    expect((await db.query('SELECT count(*)::int AS n FROM clients')).rows[0].n).toBe(0);
+    expect((await api('POST', '/v1/jobs/search', 'wt_bogus', { query })).status).toBe(401);
+    const t = await newToken();
+    expect((await api('POST', '/v1/jobs/search', t, { query })).body.total).toBe(2);
+    expect((await db.query("SELECT tool, via, calls FROM usage_daily")).rows).toEqual([{ tool: 'search_jobs', via: 'rest', calls: 1 }]);
+
+    const mcp = new McpClient({ name: 'test', version: '1.0.0' });
+    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    const res = (await mcp.callTool({ name: 'search_jobs', arguments: { query, limit: 1 } })) as any;
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ total: 2, next_offset: 1 });
+    await mcp.close();
+    expect((await db.query('SELECT count(*)::int AS n FROM clients')).rows[0].n).toBe(1); // only the token made above
+    expect((await db.query("SELECT dim, n FROM counts_daily WHERE metric = 'anonymous_search' ORDER BY dim")).rows).toEqual([
+      { dim: 'mcp:search_jobs', n: 1 },
+      { dim: 'rest:search_jobs', n: 6 },
+    ]);
+  });
+
+  it('publishes the companies in the directory, but not boards a client only watches', async () => {
+    site.jobs = [{ id: 'a1', title: 'iOS Engineer', location: 'Austin' }, { id: 'a2', title: 'Designer', location: 'Remote' }];
+    await syncBoardIndex(ctx, [`${origin}/careers`, `${origin}/board2`]);
+    await checkResource(ctx, (await db.query<{ id: string }>('SELECT id FROM resources WHERE url = $1', [`${origin}/careers`])).rows[0]!.id, { waitForHost: true });
+    const t = await newToken();
+    await api('POST', '/v1/watches', t, { url: `${origin}/page` }); // an arbitrary careers page: watched, never published
+
+    const listed = await api('GET', '/v1/companies');
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body).toMatchObject({ total: 2, directory_size: 2, next_offset: null });
+    expect(listed.body.companies.map((c: any) => [c.board_url, c.open_jobs])).toEqual([
+      [`${origin}/board2`, null], // not checked yet
+      [`${origin}/careers`, 2],
+    ]);
+    expect(JSON.stringify(listed.body)).not.toContain('/page');
+    expect((await api('GET', '/v1/companies?q=CAREERS&limit=1')).body).toMatchObject({ total: 1, companies: [{ board_url: `${origin}/careers` }] });
+    expect((await api('GET', '/v1/companies?limit=1')).body).toMatchObject({ total: 2, next_offset: 1 });
+    expect((await api('GET', '/v1/companies?q=nope')).body).toMatchObject({ total: 0, companies: [] });
+
+    const html = await app.inject({ url: '/companies' });
+    expect(html.statusCode).toBe(200);
+    expect(html.body).toContain('<h1>Companies</h1>');
+    expect(html.body).toContain(`href="${origin}/careers"`);
+    expect(html.body).not.toContain(`${origin}/page`);
+
+    const mcp = new McpClient({ name: 'test', version: '1.0.0' });
+    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    const res = (await mcp.callTool({ name: 'list_companies', arguments: { query: 'board2' } })) as any;
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ total: 1, companies: [{ board_url: `${origin}/board2` }] });
+    await mcp.close();
+  });
+
+  it('limits searches per address', async () => {
+    for (let i = 0; i < ctx.config.searchPerMinute; i++) await api('POST', '/v1/jobs/search', undefined, { keywords: ['ios'] });
+    const over = await api('POST', '/v1/jobs/search', undefined, { keywords: ['ios'] });
+    expect(over.status).toBe(429);
+    expect(over.body.error).toBe('RATE_LIMITED');
   });
 
   // ------------------------------------------------------------------ politeness & caps
