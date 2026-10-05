@@ -1,0 +1,11 @@
+interface:
+  display_name: "Watchtower Job Watch"
+  short_description: "Monitor job matches and summarize new postings"
+  default_prompt: "Use $job-watch to watch for iOS jobs in Austin and show current matches."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "watchtower"
+      description: "Watchtower job monitoring service"
+      transport: "streamable_http"
+      url: "https://watchtower.lat/mcp"

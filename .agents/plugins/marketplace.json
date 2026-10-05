@@ -1,0 +1,20 @@
+{
+  "name": "watchtower",
+  "interface": {
+    "displayName": "Watchtower"
+  },
+  "plugins": [
+    {
+      "name": "watchtower",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -68,6 +68,10 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
   app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
   app.get('/.well-known/mcp.json', async () => serverCard(base));
+  // Public ownership proof for the Watchtower OpenAI plugin submission.
+  app.get('/.well-known/openai-apps-challenge', { config: { limit: false } }, async (_req, reply) =>
+    reply.type('text/plain; charset=utf-8').send('hVR1ZU10lOhz8t3zqCFwK6zeP93zUV5yhy5PdXzbWsU'),
+  );
   app.get('/.well-known/mcp-server-card', async () => serverCard(base));
   app.get('/robots.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(robotsTxt(base)));
   if (config.mcpRegistryAuth) {

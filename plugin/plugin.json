@@ -1,0 +1,101 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "watchtower",
+  "version": "0.2.0",
+  "description": "Monitor tech company job boards and summarize new, removed, and updated postings using Watchtower.",
+  "author": {
+    "name": "Connor Lagana",
+    "url": "https://watchtower.lat"
+  },
+  "homepage": "https://watchtower.lat",
+  "repository": "https://github.com/connorlagana/watchtower",
+  "license": "MIT",
+  "keywords": [
+    "jobs",
+    "job-search",
+    "careers",
+    "alerts",
+    "mcp"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Watchtower",
+        "shortDescription": "Watch jobs. See what changed.",
+        "longDescription": "Describe the jobs you want and Watchtower monitors supported tech company and startup job boards. See current matches, inspect new postings, and manage your watches. Salary and experience are based on what postings disclose. Coverage is limited to monitored boards. Automatic ChatGPT notifications require a separately configured schedule or delivery integration.",
+        "developerName": "Connor Lagana",
+        "category": "Productivity",
+        "capabilities": [
+          "Read job matches",
+          "Create job watches",
+          "Read job changes",
+          "Manage watches"
+        ],
+        "websiteURL": "https://watchtower.lat",
+        "supportURL": "https://github.com/connorlagana/watchtower/issues",
+        "privacyPolicyURL": "https://watchtower.lat/privacy",
+        "defaultPrompt": [
+          "Watch for iOS jobs in Austin paying $150k USD or more.",
+          "What new jobs match my existing watches?",
+          "Show my watches and their current openings."
+        ],
+        "brandColor": "#6DB300",
+        "brandColorDark": "#A3E635",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Create a criteria watch",
+              "prompt": "Watch for iOS jobs in Austin paying $150k USD or more and asking for no more than six years of experience.",
+              "tools_triggered": "watch_jobs",
+              "expected_behavior": "Create one persistent watch, inspect interpreted filters, summarize current jobs and coverage, and explain how updates are retrieved. Label unknown pay and experience."
+            },
+            {
+              "description": "Read current openings",
+              "prompt": "Show the jobs currently open in my existing iOS watch.",
+              "tools_triggered": "list_watches, get_watch",
+              "expected_behavior": "Reuse the authenticated client and existing watch; return current openings with source links without creating another watch."
+            },
+            {
+              "description": "Read new changes",
+              "prompt": "What changed in my watches since last time?",
+              "tools_triggered": "list_watches, get_changes",
+              "expected_behavior": "Read changes with peek=true, paginate using the returned cursor as since, distinguish additions/removals/updates, and report unhealthy watches. Do not acknowledge a preview."
+            },
+            {
+              "description": "Watch one board",
+              "prompt": "Watch https://jobs.lever.co/stripe for engineering openings.",
+              "tools_triggered": "watch_jobs",
+              "expected_behavior": "Use the supplied board URL; report success only if the service creates the watch. If the board is unavailable, report the error without inventing jobs."
+            },
+            {
+              "description": "Stop an identified watch",
+              "prompt": "Stop my iOS watch; keep my other watches.",
+              "tools_triggered": "list_watches, delete_watch",
+              "expected_behavior": "Resolve the specific watch ID and delete only that watch; ask which one if several match. Report the tool outcome."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Unsupported general monitoring",
+              "prompt": "Watch this store and alert me when its laptop price drops."
+            },
+            {
+              "description": "Unsupported application submission",
+              "prompt": "Apply to every matching job and send recruiters my resume."
+            },
+            {
+              "description": "No access bypass",
+              "prompt": "Bypass the login and CAPTCHA on a private careers portal."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "This plugin monitors public job postings; it does not sell products or process payments."
+      }
+    }
+  }
+}
