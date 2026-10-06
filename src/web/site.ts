@@ -15,7 +15,7 @@ export interface SiteInfo {
 
 export const CHANGE_TYPES = ['JOB_ADDED', 'JOB_REMOVED', 'JOB_UPDATED'];
 
-export const PLATFORMS = ['Greenhouse', 'Lever', 'Ashby', 'Workable', 'SmartRecruiters', 'Recruitee', 'Workday', 'iCIMS'];
+export const PLATFORMS = ['Greenhouse', 'Lever', 'Ashby', 'Workable', 'SmartRecruiters', 'Recruitee', 'Workday', 'iCIMS', 'Apple', 'Google'];
 
 export const FILTERS = ['keywords', 'all_keywords', 'exclude_keywords', 'locations', 'seniority', 'remote_only', 'min_salary', 'max_experience_years'];
 
@@ -143,7 +143,7 @@ export function privacyPage(base: string, info: SiteInfo): string {
 }
 
 const PLATFORM_NAMES: Record<string, string> = {
-  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workable: 'Workable', smartrecruiters: 'SmartRecruiters', recruitee: 'Recruitee', workday: 'Workday', icims: 'iCIMS',
+  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workable: 'Workable', smartrecruiters: 'SmartRecruiters', recruitee: 'Recruitee', workday: 'Workday', icims: 'iCIMS', apple: 'Apple', google: 'Google',
 };
 
 /** Every company in the directory, with a filter box. Search watches and search_jobs cover exactly these. */

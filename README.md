@@ -12,7 +12,7 @@ Watchtower checks the job boards of tech companies and startups on a schedule an
 
 - **No URL needed.** A watch created from a `query` covers every board Watchtower monitors: a built-in directory of tech company and startup boards plus every board anyone has watched by URL.
 - **Pay and experience.** Jobs carry `salary` and `experience_years` when the posting states them, and watches filter on `min_salary` and `max_experience_years`.
-- **Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS** are read through each platform's own endpoints: no bot walls. Any other careers page works if it publishes schema.org `JobPosting` markup.
+- **Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS** are read through each platform's own endpoints: no bot walls. So are **Apple** (`jobs.apple.com`) and **Google** (`careers.google.com`), which run their own careers sites. Any other careers page works if it publishes schema.org `JobPosting` markup.
 - **Filters on the watch**, so `get_changes` only returns what matters: `keywords`, `all_keywords`, `exclude_keywords`, `locations`, `seniority`, `remote_only`, `min_salary` and `max_experience_years`. Every job carries derived `remote` and `seniority` fields.
 - **Many companies in one call**: pass `urls` instead of `url`.
 - **MCP** (Streamable HTTP) and **REST**, backed by the same service layer.
@@ -106,7 +106,7 @@ curl -s -X POST localhost:3000/v1/watches -H "Authorization: Bearer $TOKEN" -H "
 {
   "scope": "all_boards",
   "interpreted": { "filters": { "keywords": ["ios"], "locations": ["austin"], "min_salary": 150000, "max_experience_years": 6, "include_unknown": true }, "notes": [] },
-  "coverage": { "boards": 1061 },
+  "coverage": { "boards": 1346 },
   "matching_jobs_count": 3,
   "current_jobs": [ { "title": "Senior iOS Engineer", "company": "Acme", "location": "Austin, TX", "salary": { "min": 165000, "max": 210000, "currency": "USD", "period": "year", "annual_min": 165000, "annual_max": 210000 }, "experience_years": 5, "url": "…" } ]
 }
@@ -118,11 +118,12 @@ curl -s -X POST localhost:3000/v1/watches -H "Authorization: Bearer $TOKEN" -H "
   - "at least 150k", "$180,000+", "$45/hr" become `min_salary`, converted to a yearly figure.
   - "a maximum of 6 years of experience", "3-5 years", "I have 4 years of experience" become `max_experience_years`.
   - "senior", "staff", "entry level" and the other levels become `seniority`. "no managers" becomes `exclude_keywords`.
-- **Coverage is tech companies and startups, not the whole internet.** The built-in directory (`src/search/boards.ts`) lists 1,061 company boards on Greenhouse, Lever, Ashby and Workable, from large public tech companies down to seed-stage startups. Each was confirmed against its platform's API with open jobs. Every role those companies post is covered, not only engineering. The live list is published at `/companies` and through `list_companies`. On top of that, every board any client watches by URL is covered, and stays covered (see [Growing the directory](#growing-the-directory)).
+- **Coverage is tech companies and startups, not the whole internet.** The built-in directory (`src/search/boards.ts`) lists 1,348 company boards on Greenhouse, Lever, Ashby, Workable, SmartRecruiters and Workday, plus Apple's and Google's own careers sites, from seed-stage startups to large employers in every industry that hire developers. Each was confirmed against its platform's API with open jobs. Every role those companies post is covered, not only engineering. The live list is published at `/companies` and through `list_companies`. On top of that, every board any client watches by URL is covered, and stays covered (see [Growing the directory](#growing-the-directory)).
 - **Pay and experience come from the posting.** Lever, Ashby, Greenhouse, Recruitee and JSON-LD pay fields are read directly; otherwise the posting text is parsed ("$150,000 - $200,000/yr", "5+ years of experience"). A job passes `min_salary` when the top of its range reaches it, and `max_experience_years` when it asks for no more than that.
 - **Postings that state neither are still reported**, without a `salary` or `experience_years` field, because many postings state no pay. Pass `include_unknown: false` to report only postings that state a qualifying value.
 - **Only new postings are reported** (`JOB_ADDED`), and only those that appear after the watch was created. `current_jobs` on creation and on `get_watch` is the baseline of what is open now.
-- SmartRecruiters, Workday and iCIMS listings carry no posting text, so their jobs never have `salary` or `experience_years`.
+- SmartRecruiters, Workday, iCIMS and Google listings carry no posting text, so their jobs never have `salary` or `experience_years`. Apple listings carry only a short summary, which rarely states either.
+- Google jobs have no location and only the first part of the title (see [Google](#how-it-works)), so a search with `locations` never matches them.
 
 ### Growing the directory
 
@@ -194,6 +195,8 @@ A search watch has no resource of its own. It reads the same change events, from
 - **Board URLs map to platform endpoints.** `boards.greenhouse.io/acme`, `jobs.lever.co/acme`, `jobs.ashbyhq.com/acme`, `apply.workable.com/acme`, `jobs.smartrecruiters.com/Acme` and `acme.recruitee.com` (plus their EU and embed variants) are fetched from each platform's public job-board API in one request. Other URLs are fetched as HTML and read through schema.org `JobPosting` JSON-LD (including `@graph` and `ItemList`). Only the job list is compared, so page churn around it (session tokens, "rendered N minutes ago", banners) never registers as a change.
   - **Workday** (`acme.wd5.myworkdayjobs.com/Careers`, `wd3.myworkdaysite.com/recruiting/acme/External`): the site's own search endpoint, a JSON POST that returns postings newest first, 20 per page. A check reads the newest 200 (10 requests). Boards with more postings are marked `complete: false` on the snapshot and never emit `JOB_REMOVED`, because a job leaving the window isn't a removal. Job links point at the public site; the relative "Posted 3 Days Ago" is not kept.
   - **iCIMS** (`careers-acme.icims.com`): the portal's `sitemap.xml` lists every open job in one request (id plus a slug of the title), and the first page of `/jobs/search` gives the newest ~50 their real title, location and posting date. A check reads both. Jobs seen only in the sitemap are `partial: true` (title from the slug, no location); details learned earlier are carried forward, and a partial entry becoming a full one is not reported as an update.
+  - **Apple** (any `jobs.apple.com` URL): the site's own search endpoint (`/api/v1/search`), a JSON POST that needs no session and returns roles newest first, 20 per page, with title, team, every location and posting date. A check reads the newest 300 (15 requests) and is marked `complete: false`, as for Workday. About 80 evergreen retail roles are stamped with the request time, so they always sort first and use part of that window; that timestamp is not kept as `posted_at`. Apple posts one role per location, so a role open in three cities is three jobs.
+  - **Google** (`careers.google.com`, `www.google.com/about/careers/applications`): Google's robots.txt disallows the job search and job pages, so a check reads only the jobs sitemap, which lists every open role in one request. Every job is `partial: true`: the title comes from the URL slug, which stops at the first comma of the real title ("Senior Software Engineer, Infrastructure" reads as "Senior Software Engineer"), and there is no location, team or date.
 - **Derived fields.** Every job gets `remote` (title or location says remote, and not hybrid/on-site) and `seniority` (intern, entry, mid, senior, staff, principal, manager, director, from the title; management words win over IC levels, and "mid" means the title carries no level). These are heuristics over the text, which is why they are exposed on the job rather than hidden inside the filter.
 - **Resources vs. watches.** Watches are per-client intents. Resources are what actually gets fetched. Any number of watches on the same board (across clients) share one resource, one fetch per interval, and one set of snapshots. URLs are canonicalized before sharing: tracking parameters (`utm_*`, `fbclid`, `gclid`, …) are dropped and the query is sorted. The resource is checked at the shortest interval any of its active watches asks for, but never more often than `MIN_CHECK_INTERVAL_SECONDS` (default 5 minutes).
 - **Job identity.** Jobs are keyed by the platform's job id, or for JSON-LD by `identifier`, then `url`, then title and location. A job whose title, location, department or url changed becomes `JOB_UPDATED` with `changed_fields`. A JSON-LD job without a stable id whose location changed is paired into one `JOB_UPDATED` instead of a remove plus an add.
@@ -278,7 +281,7 @@ The integration suite drops and recreates the `public` schema of `TEST_DATABASE_
 The suite has three parts:
 - Unit tests.
 - Property-based fuzz tests (fast-check) over the HTML, JSON-LD and robots parsers and the job diff invariants.
-- Source tests for the Workday and iCIMS parsers and pagination, and the remote/seniority classifier.
+- Source tests for the Workday, iCIMS, Apple and Google parsers and pagination, and the remote/seniority classifier.
 - Search tests for the query reader, the pay and experience parsers, whole-word matching, the filters and board discovery.
 - Integration tests covering REST, MCP, sharing, filters, search watches and the board directory, batch creation, page churn, `NO_JOB_DATA`, host leases, concurrent checks, caps, expiry and retention, webhooks, rate limits and metrics.
 
@@ -290,7 +293,7 @@ src/
   config.ts, db.ts          env config; pg pool + migration runner
   security/ssrf.ts          URL validation + connect-time DNS guard
   fetch/                    safeFetch (redirects, limits, decompression), robots.txt
-  extract/                  job-board adapters (incl. Workday, iCIMS), JobPosting JSON-LD, remote/seniority
+  extract/                  job-board adapters (incl. Workday, iCIMS, Apple, Google), JobPosting JSON-LD, remote/seniority
                             classifier, pay/experience parsing, term matching, job diff (identity, pairing)
   search/                   plain-language query reader; the built-in board directory; board discovery
                             (careers-page links, name guesses)
@@ -315,3 +318,5 @@ scripts/discover-boards.ts  grow the directory from a list of companies
 - General page, feed or event monitoring. Watchtower used to do these; it now does job boards only (migration `003_jobs_only.sql` retires existing page and event watches).
 - Pagination beyond the first 100 SmartRecruiters postings or the newest 200 Workday postings per board.
 - Reading each iCIMS job page for details; only the newest ~50 jobs per portal get a real title and location.
+- Reading Google's job search or job pages, which its robots.txt disallows; Google jobs are known only by their sitemap entry.
+- Reading more than the newest 300 Apple roles per check.

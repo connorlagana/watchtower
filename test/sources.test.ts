@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { boardPageUrl, collect, resolveSource } from '../src/extract/adapters.js';
+import { collectApple, MAX_JOBS as APPLE_MAX_JOBS, PAGE_SIZE as APPLE_PAGE_SIZE, parseApplePage } from '../src/extract/apple.js';
+import { parseGoogleSitemap } from '../src/extract/google.js';
 import { BOARDS } from '../src/search/boards.js';
 import { isRemote, seniorityOf } from '../src/extract/classify.js';
 import { computeChanges } from '../src/extract/diff.js';
@@ -135,6 +137,128 @@ describe('iCIMS', () => {
   });
 });
 
+describe('Apple', () => {
+  const api = 'https://jobs.apple.com/api/v1/search';
+  const loc = (name: string, countryName: string) => ({ name, countryName, city: '', postLocationId: `postLocation-${name}` });
+  const role = (id: string, title: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    positionId: id.replace(/^PIPE-|-\d+$/g, ''),
+    postingTitle: title,
+    transformedPostingTitle: title.toLowerCase().replace(/\W+/g, '-'),
+    postDateInGMT: '2026-10-06T01:52:04.545Z',
+    locations: [loc('Cupertino', 'United States of America')],
+    team: { teamName: 'Software and Services', teamCode: 'SFTWR' },
+    jobSummary: 'Build the frameworks behind every app. You have 5+ years of experience shipping iOS software.',
+    homeOffice: false,
+    ...extra,
+  });
+  const page = (total: number, ...roles: ReturnType<typeof role>[]) => JSON.stringify({ res: { searchResults: roles, totalRecords: total } });
+
+  it('maps any jobs.apple.com URL to the search endpoint', () => {
+    expect(resolveSource('https://jobs.apple.com/en-us/search?team=SFTWR')).toEqual({ adapter: 'apple', fetchUrl: api });
+    expect(resolveSource('https://jobs.apple.com/en-gb/details/200668060-0836/senior-leader')).toEqual({ adapter: 'apple', fetchUrl: api });
+    expect(resolveSource('https://www.apple.com/careers/us/').adapter).toBe('html');
+  });
+
+  it('parses roles with team, every location, a details link and the summary', () => {
+    const { jobs, total } = parseApplePage(
+      page(2, role('200668060-0836', 'Senior iOS Engineer', { locations: [loc('Cupertino', 'United States of America'), loc('Austin', 'United States of America')] })),
+    );
+    expect(total).toBe(2);
+    expect(jobs).toEqual([
+      {
+        key: 'job:apple:200668060-0836',
+        title: 'Senior iOS Engineer',
+        location: 'Cupertino, United States of America',
+        other_locations: ['Austin, United States of America'],
+        department: 'Software and Services',
+        company: 'Apple',
+        url: 'https://jobs.apple.com/en-us/details/200668060-0836/senior-ios-engineer',
+        posted_at: '2026-10-06T01:52:04.545Z',
+        source: 'apple',
+        experience_years: 5,
+      },
+    ]);
+  });
+
+  it('marks home-office roles remote and drops the request-time date of evergreen roles', () => {
+    const [home, pipe] = parseApplePage(
+      page(
+        2,
+        role('200600001-0157', 'Technical Specialist', { homeOffice: true }),
+        role('PIPE-200313970', 'US - Specialist: Seasonal, Part-time', { postDateInGMT: '2026-10-06T02:58:12.914728295Z', locations: [loc('United States', 'United States')] }),
+      ),
+    ).jobs;
+    expect(home!.location).toBe('Cupertino, United States of America, Remote');
+    expect(pipe).toMatchObject({ location: 'United States', posted_at: undefined });
+  });
+
+  it('pages through the newest MAX_JOBS and marks larger listings incomplete', async () => {
+    const pages: number[] = [];
+    const post = async (n: number) => {
+      pages.push(n);
+      return page(0, ...Array.from({ length: APPLE_PAGE_SIZE }, (_, i) => role(`${n}${i}-1`, `Role ${n}-${i}`)));
+    };
+    const x = await collectApple(page(6201, role('1-1', 'Role 1')), post);
+    expect(pages).toEqual(Array.from({ length: APPLE_MAX_JOBS / APPLE_PAGE_SIZE - 1 }, (_, i) => i + 2));
+    expect(x.complete).toBe(false);
+  });
+
+  it('collect() posts follow-up pages through the supplied fetcher', async () => {
+    const calls: [string, string | undefined][] = [];
+    const more = async (url: string, body?: string) => {
+      calls.push([url, body]);
+      return page(0, role('2-1', 'Machine Learning Engineer'));
+    };
+    const x = await collect('apple', api, { body: page(21, role('1-1', 'Staff Software Engineer')), contentType: 'application/json', finalUrl: api }, more);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]![1]!)).toMatchObject({ page: 2, sort: 'newest', locale: 'en-us' });
+    expect(x.complete).toBe(true);
+    expect(x.jobs.map((j) => [j.key, j.seniority])).toEqual([
+      ['job:apple:1-1', 'staff'],
+      ['job:apple:2-1', 'mid'],
+    ]);
+  });
+});
+
+describe('Google', () => {
+  const sitemap = 'https://www.google.com/about/careers/applications/jobs/sitemap.xml';
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://careers.google.com/jobs/results/133023244499198662-senior-staff-software-engineer/</loc><lastmod>2026-10-05T11:42:17.337Z</lastmod></url>
+    <url><loc>https://careers.google.com/jobs/results/77977290071253702-software-engineer-iii/</loc></url>
+    <url><loc>https://careers.google.com/jobs/results/77977290071253702-software-engineer-iii/</loc></url>
+    <url><loc>https://careers.google.com/locations/austin/</loc></url></urlset>`;
+
+  it('maps the careers site, old and new hosts, to the jobs sitemap', () => {
+    expect(resolveSource('https://careers.google.com/jobs/results/?q=ios')).toEqual({ adapter: 'google', fetchUrl: sitemap });
+    expect(resolveSource('https://www.google.com/about/careers/applications/jobs/results?location=Austin')).toEqual({ adapter: 'google', fetchUrl: sitemap });
+    expect(resolveSource('https://www.google.com/search?q=jobs').adapter).toBe('html');
+  });
+
+  it('reads every job from the sitemap as a partial entry titled from the slug', () => {
+    const x = parseGoogleSitemap(xml);
+    expect(x.complete).toBe(true);
+    expect(x.jobs).toEqual([
+      {
+        key: 'job:google:133023244499198662',
+        title: 'Senior Staff Software Engineer',
+        company: 'Google',
+        url: 'https://www.google.com/about/careers/applications/jobs/results/133023244499198662-senior-staff-software-engineer',
+        source: 'google',
+        partial: true,
+      },
+      {
+        key: 'job:google:77977290071253702',
+        title: 'Software Engineer III',
+        company: 'Google',
+        url: 'https://www.google.com/about/careers/applications/jobs/results/77977290071253702-software-engineer-iii',
+        source: 'google',
+        partial: true,
+      },
+    ]);
+  });
+});
+
 describe('board page URLs', () => {
   it('gives every board a public page that resolves back to the same board', () => {
     const boards = [
@@ -146,6 +270,8 @@ describe('board page URLs', () => {
       'https://acme.wd5.myworkdayjobs.com/en-US/Careers',
       'https://wd3.myworkdaysite.com/recruiting/acme/External',
       'https://careers-acme.icims.com/jobs/search',
+      'https://jobs.apple.com/en-us/details/200668060-0836/senior-leader',
+      'https://www.google.com/about/careers/applications/jobs/results',
     ];
     for (const url of boards) {
       const source = resolveSource(url);
