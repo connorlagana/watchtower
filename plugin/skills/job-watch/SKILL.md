@@ -108,9 +108,10 @@ without user direction. Stop a user-identified watch with `delete_watch`; clarif
 Search watches cover monitored tech company/startup boards and report new matching postings.
 Specific board watches may also report removals and updates. Supported adapters include
 Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday, and iCIMS, plus the
-Apple and Google careers sites; other careers pages need JobPosting structured data or a
-supported board link. Workday and Apple snapshots may be incomplete and must not be used to
-infer removals. Google jobs have no location, so location filters never match them.
+Apple, Google, Amazon and Microsoft careers sites; other careers pages need JobPosting
+structured data or a supported board link. Workday, Apple, Amazon and Microsoft snapshots may
+be incomplete and must not be used to infer removals. Google jobs have no location, so
+location filters never match them.
 
 Report `NO_JOB_DATA`, rate limits, and authentication errors directly. Do not bypass logins,
 CAPTCHAs, or robots restrictions. Arbitrary page changes, resume submission, recruiter messaging,

@@ -3,13 +3,16 @@
  * SmartRecruiters or Recruitee board is fetched through that platform's
  * public job-board JSON API instead of scraping the HTML. Workday and iCIMS
  * sites need more than one request per check (see workday.ts / icims.ts).
- * Apple and Google run their own careers sites (see apple.ts / google.ts).
+ * Apple, Google, Amazon and Microsoft run their own careers sites (see apple.ts,
+ * google.ts, amazon.ts, microsoft.ts).
  * Any other careers page is read through its schema.org JobPosting markup.
  */
+import { collectAmazon, resolveAmazon, SITE_URL as AMAZON_SITE } from './amazon.js';
 import { collectApple, pageBody as applePageBody, resolveApple, SITE_URL as APPLE_SITE } from './apple.js';
 import { classify } from './classify.js';
 import { jobDetails, makeSalary, periodOf } from './details.js';
 import { extractHtml } from './html.js';
+import { collectMicrosoft, PAGE_SPACING_MS as MICROSOFT_PAGE_SPACING_MS, resolveMicrosoft, SITE_URL as MICROSOFT_SITE } from './microsoft.js';
 import { parseGoogleSitemap, resolveGoogle, SITE_URL as GOOGLE_SITE } from './google.js';
 import { collectIcims, resolveIcims, searchUrlFor } from './icims.js';
 import { extractJsonLd, parseJsonLdBlocks } from './jsonld.js';
@@ -92,6 +95,10 @@ export function resolveSource(input: string): ResolvedSource {
   if (apple) return { adapter: 'apple', fetchUrl: apple.apiUrl };
   const google = resolveGoogle(u);
   if (google) return { adapter: 'google', fetchUrl: google.sitemapUrl };
+  const amazon = resolveAmazon(u);
+  if (amazon) return { adapter: 'amazon', fetchUrl: amazon.apiUrl };
+  const microsoft = resolveMicrosoft(u);
+  if (microsoft) return { adapter: 'microsoft', fetchUrl: microsoft.apiUrl };
   return { adapter: 'html', fetchUrl: canonicalUrl(input) };
 }
 
@@ -121,7 +128,14 @@ export function requestsPerCheck(adapter: AdapterName): number {
   if (adapter === 'workday') return 10;
   if (adapter === 'icims') return 2;
   if (adapter === 'apple') return 15;
+  if (adapter === 'amazon') return 3;
+  if (adapter === 'microsoft') return 5;
   return 1;
+}
+
+/** The least pause between the requests of one check, for sites that refuse requests in quick succession. */
+export function minPageSpacingMs(adapter: AdapterName): number {
+  return adapter === 'microsoft' ? MICROSOFT_PAGE_SPACING_MS : 0;
 }
 
 type Rec = Record<string, unknown>;
@@ -301,6 +315,8 @@ const BOARD_SLUG: Partial<Record<AdapterName, RegExp>> = {
   icims: /^https:\/\/(?:careers-)?([^./]+)\.icims\.com/,
   apple: /^https:\/\/jobs\.(apple)\.com\//,
   google: /^https:\/\/www\.(google)\.com\/about\/careers\//,
+  amazon: /^https:\/\/www\.(amazon)\.jobs\//,
+  microsoft: /^https:\/\/apply\.careers\.(microsoft)\.com\//,
 };
 
 /** A readable company name from the board's slug ("acme-robotics" → "Acme Robotics"), for sources that do not name the company. */
@@ -341,6 +357,10 @@ export function boardPageUrl(adapter: AdapterName, fetchUrl: string): string {
       return APPLE_SITE;
     case 'google':
       return GOOGLE_SITE;
+    case 'amazon':
+      return AMAZON_SITE;
+    case 'microsoft':
+      return MICROSOFT_SITE;
     default:
       return fetchUrl;
   }
@@ -352,7 +372,7 @@ function withCompany(x: Extraction, adapter: AdapterName, fetchUrl: string): Ext
   return company ? { ...x, jobs: x.jobs.map((j) => (j.company ? j : { ...j, company })) } : x;
 }
 
-/** Extract jobs from a single response (every adapter except Workday, iCIMS and Apple). */
+/** Extract jobs from a single response (every adapter except Workday, iCIMS, Apple, Amazon and Microsoft). */
 export function extract(adapter: AdapterName, body: string, contentType: string, opts: { baseUrl?: string } = {}): Extraction {
   return finalize(extractOne(adapter, body, contentType, opts));
 }
@@ -370,6 +390,8 @@ export async function collect(adapter: AdapterName, fetchUrl: string, primary: {
   if (adapter === 'workday') return withCompany(finalize(await collectWorkday(fetchUrl, primary.body, (offset) => more(fetchUrl, pageBody(offset)))), adapter, fetchUrl);
   if (adapter === 'apple') return finalize(await collectApple(primary.body, (page) => more(fetchUrl, applePageBody(page))));
   if (adapter === 'google') return finalize(parseGoogleSitemap(primary.body));
+  if (adapter === 'amazon') return finalize(await collectAmazon(primary.body, (url) => more(url)));
+  if (adapter === 'microsoft') return finalize(await collectMicrosoft(primary.body, (url) => more(url)));
   if (adapter === 'icims') {
     // The search page is an enrichment: a failure there still leaves a complete job list.
     const search = await more(searchUrlFor(fetchUrl)).catch(() => null);

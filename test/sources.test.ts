@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { boardPageUrl, collect, resolveSource } from '../src/extract/adapters.js';
+import { collectAmazon, MAX_JOBS as AMAZON_MAX_JOBS, pageUrl as amazonPageUrl, parseAmazonPage } from '../src/extract/amazon.js';
 import { collectApple, MAX_JOBS as APPLE_MAX_JOBS, PAGE_SIZE as APPLE_PAGE_SIZE, parseApplePage } from '../src/extract/apple.js';
+import { collectMicrosoft, MAX_JOBS as MS_MAX_JOBS, pageUrl as msPageUrl, parseMicrosoftPage } from '../src/extract/microsoft.js';
 import { parseGoogleSitemap } from '../src/extract/google.js';
 import { BOARDS } from '../src/search/boards.js';
 import { isRemote, seniorityOf } from '../src/extract/classify.js';
@@ -259,6 +261,131 @@ describe('Google', () => {
   });
 });
 
+describe('Amazon', () => {
+  const api = 'https://www.amazon.jobs/en/search.json?offset=0&result_limit=100&sort=recent';
+  const loc = (type: string, location: string, normalizedLocation: string) => JSON.stringify({ type, location, normalizedLocation });
+  const job = (id: string, title: string, extra: Record<string, unknown> = {}) => ({
+    id: `uuid-${id}`,
+    id_icims: id,
+    title,
+    job_path: `/en/jobs/${id}/${title.toLowerCase().replace(/\W+/g, '-')}`,
+    location: 'US, WA, Seattle',
+    normalized_location: 'Seattle, Washington, USA',
+    locations: [loc('ONSITE', 'US, WA, Seattle', 'Seattle, Washington, USA'), loc('ONSITE', 'US, TX, Austin', 'Austin, Texas, USA')],
+    job_category: 'Software Development',
+    company_name: 'Amazon Web Services, Inc.',
+    posted_date: 'October  6, 2026',
+    description: 'Build services that run AWS.',
+    basic_qualifications: '- 3+ years of non-internship professional software development experience',
+    preferred_qualifications: '- Experience with distributed systems',
+    ...extra,
+  });
+  const page = (hits: number, ...jobs: ReturnType<typeof job>[]) => JSON.stringify({ error: null, hits, jobs });
+
+  it('maps amazon.jobs URLs to the search endpoint', () => {
+    expect(resolveSource('https://www.amazon.jobs/en/search?base_query=ios')).toEqual({ adapter: 'amazon', fetchUrl: api });
+    expect(resolveSource('https://amazon.jobs/en/jobs/10570004/sde')).toEqual({ adapter: 'amazon', fetchUrl: api });
+    expect(resolveSource('https://www.amazon.com/jobs').adapter).toBe('html');
+  });
+
+  it('parses postings with every location, the posting date and experience from the qualifications', () => {
+    expect(parseAmazonPage(page(1, job('10570004', 'Software Development Engineer'))).jobs).toEqual([
+      {
+        key: 'job:amazon:10570004',
+        title: 'Software Development Engineer',
+        location: 'Seattle, Washington, USA',
+        other_locations: ['Austin, Texas, USA'],
+        department: 'Software Development',
+        company: 'Amazon',
+        url: 'https://www.amazon.jobs/en/jobs/10570004/software-development-engineer',
+        posted_at: '2026-10-06',
+        source: 'amazon',
+        experience_years: 3,
+      },
+    ]);
+  });
+
+  it('marks a virtual primary location remote and rejects error responses', () => {
+    const [v] = parseAmazonPage(
+      page(1, job('1', 'Support Advisor', { location: 'IN, TS, Hyderabad - Virtual', normalized_location: 'Hyderabad, Telangana, IND', locations: [loc('VIRTUAL', 'IN, TS, Hyderabad - Virtual', 'Hyderabad, Telangana, IND')] })),
+    ).jobs;
+    expect(v).toMatchObject({ location: 'Hyderabad, Telangana, IND, Remote', other_locations: undefined });
+    expect(() => parseAmazonPage(JSON.stringify({ error: 'Result limit cannot be greater than 100', hits: 0, jobs: null }))).toThrow(/Result limit/);
+  });
+
+  it('pages by offset through the newest MAX_JOBS and stays incomplete for a capped hit count', async () => {
+    const urls: string[] = [];
+    const x = await collectAmazon(page(10000, job('1', 'Role 1')), async (url) => {
+      urls.push(url);
+      return page(10000, job(String(urls.length + 1), `Role ${urls.length + 1}`));
+    });
+    expect(urls).toEqual([amazonPageUrl(100), amazonPageUrl(200)].slice(0, AMAZON_MAX_JOBS / 100 - 1));
+    expect(x.jobs).toHaveLength(3);
+    expect(x.complete).toBe(false);
+  });
+});
+
+describe('Microsoft', () => {
+  const api = 'https://apply.careers.microsoft.com/api/pcsx/search?domain=microsoft.com&query=&location=&start=0&sort_by=timestamp';
+  const position = (id: number, name: string, extra: Record<string, unknown> = {}) => ({
+    id: 1970393557000000 + id,
+    displayJobId: String(200000000 + id),
+    name,
+    locations: ['United States, Washington, Redmond', 'United States, Georgia, Atlanta'],
+    standardizedLocations: ['Redmond, WA, US', 'Atlanta, GA, US'],
+    postedTs: 1791248905,
+    department: 'Software Engineering',
+    workLocationOption: 'onsite',
+    positionUrl: `/careers/job/${1970393557000000 + id}`,
+    ...extra,
+  });
+  const page = (count: number, ...positions: ReturnType<typeof position>[]) => JSON.stringify({ status: 200, data: { positions, count } });
+
+  it('maps the careers hosts to the search endpoint', () => {
+    expect(resolveSource('https://jobs.careers.microsoft.com/global/en/search?q=ios')).toEqual({ adapter: 'microsoft', fetchUrl: api });
+    expect(resolveSource('https://apply.careers.microsoft.com/careers/job/1970393557018898')).toEqual({ adapter: 'microsoft', fetchUrl: api });
+    expect(resolveSource('https://careers.microsoft.com/')).toEqual({ adapter: 'microsoft', fetchUrl: api });
+    expect(resolveSource('https://www.microsoft.com/en-us/').adapter).toBe('html');
+  });
+
+  it('parses positions with every location, the posting time and a job link', () => {
+    expect(parseMicrosoftPage(page(1, position(58777, 'Principal Software Engineer'))).jobs).toEqual([
+      {
+        key: 'job:microsoft:200058777',
+        title: 'Principal Software Engineer',
+        location: 'United States, Washington, Redmond',
+        other_locations: ['United States, Georgia, Atlanta'],
+        department: 'Software Engineering',
+        company: 'Microsoft',
+        url: 'https://apply.careers.microsoft.com/careers/job/1970393557058777',
+        posted_at: '2026-10-06T01:08:25.000Z',
+        source: 'microsoft',
+      },
+    ]);
+    expect(parseMicrosoftPage(page(1, position(1, 'Account Executive', { workLocationOption: 'remote', locations: ['United States'] }))).jobs[0]!.location).toBe('United States, Remote');
+  });
+
+  it('pages through the newest MAX_JOBS and keeps what it read when a later page is refused', async () => {
+    const urls: string[] = [];
+    const full = await collectMicrosoft(page(2379, position(1, 'Role 1')), async (url) => {
+      urls.push(url);
+      return page(2379, position(urls.length + 1, `Role ${urls.length + 1}`));
+    });
+    expect(urls).toEqual(Array.from({ length: MS_MAX_JOBS / 10 - 1 }, (_, i) => msPageUrl((i + 1) * 10)));
+    expect(full.complete).toBe(false);
+
+    const refused = await collectMicrosoft(page(25, position(1, 'Role 1')), async (url) => {
+      if (url === msPageUrl(20)) throw new Error('HTTP 429');
+      return page(25, position(2, 'Role 2'));
+    });
+    expect(refused.jobs.map((j) => j.key)).toEqual(['job:microsoft:200000001', 'job:microsoft:200000002']);
+    expect(refused.complete).toBe(false);
+
+    const small = await collectMicrosoft(page(11, position(1, 'Role 1')), async () => page(11, position(2, 'Role 2')));
+    expect(small.complete).toBe(true);
+  });
+});
+
 describe('board page URLs', () => {
   it('gives every board a public page that resolves back to the same board', () => {
     const boards = [
@@ -272,6 +399,8 @@ describe('board page URLs', () => {
       'https://careers-acme.icims.com/jobs/search',
       'https://jobs.apple.com/en-us/details/200668060-0836/senior-leader',
       'https://www.google.com/about/careers/applications/jobs/results',
+      'https://www.amazon.jobs/en/search',
+      'https://jobs.careers.microsoft.com/global/en/search',
     ];
     for (const url of boards) {
       const source = resolveSource(url);

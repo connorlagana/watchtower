@@ -3,7 +3,7 @@
  * job list, diff it against the previous snapshot, and persist the new
  * snapshot and change events atomically.
  */
-import { collect, primaryRequestBody, primaryRequestUrl, requestsPerCheck } from '../extract/adapters.js';
+import { collect, minPageSpacingMs, primaryRequestBody, primaryRequestUrl, requestsPerCheck } from '../extract/adapters.js';
 import { computeChanges, contentHash } from '../extract/diff.js';
 import { PLATFORM_ADAPTERS, type AdapterName, type Extraction, type JobItem } from '../extract/types.js';
 import { robotsAllows } from '../fetch/robots.js';
@@ -60,8 +60,11 @@ export interface CheckOptions {
 
 const inFlight = new Map<string, Promise<CheckOutcome>>();
 
-/** Pause between follow-up requests to one source within a check (pagination); briefer than the between-check spacing. */
-const pageSpacingMs = (ctx: Ctx) => Math.min(ctx.config.hostMinSpacingMs, 750);
+/**
+ * Pause between follow-up requests to one source within a check (pagination); briefer than the between-check spacing,
+ * unless the site needs longer (see minPageSpacingMs).
+ */
+const pageSpacingMs = (ctx: Ctx, adapter: AdapterName) => Math.max(Math.min(ctx.config.hostMinSpacingMs, 750), minPageSpacingMs(adapter));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Deduplicates concurrent checks of the same resource within this process. */
@@ -100,7 +103,7 @@ async function runCheck(ctx: Ctx, resourceId: string, opts: CheckOptions): Promi
 
   // robots.txt + every request of the check, each bounded by the fetch timeout.
   const requests = requestsPerCheck(r.adapter);
-  const leaseMs = ctx.config.fetchTimeoutMs * (requests + 1) + pageSpacingMs(ctx) * requests + ctx.config.hostMinSpacingMs + 5000;
+  const leaseMs = ctx.config.fetchTimeoutMs * (requests + 1) + pageSpacingMs(ctx, r.adapter) * requests + ctx.config.hostMinSpacingMs + 5000;
   const acquired = opts.waitForHost
     ? await acquireHostWaiting(ctx.db, r.host, leaseMs, Math.min(10_000, ctx.config.fetchTimeoutMs))
     : await tryAcquireHost(ctx.db, r.host, leaseMs);
@@ -139,7 +142,7 @@ function assertUsable(res: FetchResult): void {
 
 async function extractOrFail(ctx: Ctx, r: ResourceRow, res: FetchResult, opts: ReturnType<typeof fetchOptions>): Promise<Extraction> {
   const more = async (url: string, jsonBody?: string) => {
-    await sleep(pageSpacingMs(ctx));
+    await sleep(pageSpacingMs(ctx, r.adapter));
     if (!(await robotsAllows(url, opts))) throw new CheckFailure('ROBOTS_DISALLOWED', `robots.txt disallows fetching ${url}`);
     const page = await safeFetch(url, { ...opts, jsonBody });
     assertUsable(page);

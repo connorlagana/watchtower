@@ -4,7 +4,7 @@
  * industry, that Watchtower monitors on its own, so a search watch (filters,
  * no URL) has postings to match.
  *
- * 1348 boards. Every one answered its platform's public listing API with
+ * 1350 boards. Every one answered its platform's public listing API with
  * open jobs when the list was last verified (2026-10-05). Most were found with
  * scripts/discover-boards.ts from the public Y Combinator company directory;
  * the rest are well-known tech companies and large employers (Fortune 500
@@ -103,8 +103,13 @@ const WORKABLE = on(
 
 const GREENHOUSE_EU = on('https://boards.eu.greenhouse.io/', `jetbrains`);
 
-/** Companies that run their own careers site (see extract/apple.ts and extract/google.ts). */
-const OWN_SITES = ['https://jobs.apple.com/en-us/search', 'https://careers.google.com/jobs/results/'];
+/** Companies that run their own careers site (see extract/apple.ts, google.ts, amazon.ts and microsoft.ts). */
+const OWN_SITES = [
+  'https://jobs.apple.com/en-us/search',
+  'https://careers.google.com/jobs/results/',
+  'https://www.amazon.jobs/en/search',
+  'https://apply.careers.microsoft.com/careers',
+];
 
 const SMARTRECRUITERS = on('https://jobs.smartrecruiters.com/', `Deloitte6 TheNielsenCompany WesternDigital`);
 
