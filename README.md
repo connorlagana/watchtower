@@ -106,7 +106,7 @@ curl -s -X POST localhost:3000/v1/watches -H "Authorization: Bearer $TOKEN" -H "
 {
   "scope": "all_boards",
   "interpreted": { "filters": { "keywords": ["ios"], "locations": ["austin"], "min_salary": 150000, "max_experience_years": 6, "include_unknown": true }, "notes": [] },
-  "coverage": { "boards": 1346 },
+  "coverage": { "boards": 1512 },
   "matching_jobs_count": 3,
   "current_jobs": [ { "title": "Senior iOS Engineer", "company": "Acme", "location": "Austin, TX", "salary": { "min": 165000, "max": 210000, "currency": "USD", "period": "year", "annual_min": 165000, "annual_max": 210000 }, "experience_years": 5, "url": "…" } ]
 }
@@ -118,7 +118,7 @@ curl -s -X POST localhost:3000/v1/watches -H "Authorization: Bearer $TOKEN" -H "
   - "at least 150k", "$180,000+", "$45/hr" become `min_salary`, converted to a yearly figure.
   - "a maximum of 6 years of experience", "3-5 years", "I have 4 years of experience" become `max_experience_years`.
   - "senior", "staff", "entry level" and the other levels become `seniority`. "no managers" becomes `exclude_keywords`.
-- **Coverage is tech companies and startups, not the whole internet.** The built-in directory (`src/search/boards.ts`) lists 1,350 company boards on Greenhouse, Lever, Ashby, Workable, SmartRecruiters and Workday, plus the careers sites of Apple, Google, Amazon and Microsoft, from seed-stage startups to large employers in every industry that hire developers. Each was confirmed against its platform's API with open jobs. Every role those companies post is covered, not only engineering. The live list is published at `/companies` and through `list_companies`. On top of that, every board any client watches by URL is covered, and stays covered (see [Growing the directory](#growing-the-directory)).
+- **Coverage is tech companies and startups, not the whole internet.** The built-in directory (`src/search/boards.ts`) lists 1,512 company boards on Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Workday and iCIMS, plus the careers sites of Apple, Google, Amazon and Microsoft, from seed-stage startups to large employers in every industry that hire developers. Each was confirmed against its platform's API with open jobs. Every role those companies post is covered, not only engineering. The live list is published at `/companies` and through `list_companies`. On top of that, every board any client watches by URL is covered, and stays covered (see [Growing the directory](#growing-the-directory)).
 - **Pay and experience come from the posting.** Lever, Ashby, Greenhouse, Recruitee and JSON-LD pay fields are read directly; otherwise the posting text is parsed ("$150,000 - $200,000/yr", "5+ years of experience"). A job passes `min_salary` when the top of its range reaches it, and `max_experience_years` when it asks for no more than that.
 - **Postings that state neither are still reported**, without a `salary` or `experience_years` field, because many postings state no pay. Pass `include_unknown: false` to report only postings that state a qualifying value.
 - **Only new postings are reported** (`JOB_ADDED`), and only those that appear after the watch was created. `current_jobs` on creation and on `get_watch` is the baseline of what is open now.
