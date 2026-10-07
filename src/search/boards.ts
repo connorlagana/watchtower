@@ -4,7 +4,7 @@
  * industry, that Watchtower monitors on its own, so a search watch (filters,
  * no URL) has postings to match.
  *
- * 1512 boards. Every one answered its platform's public listing API with
+ * 1528 boards. Every one answered its platform's public listing API with
  * open jobs when the list was last verified (2026-10-06). Most were found with
  * scripts/discover-boards.ts from the public Y Combinator company directory;
  * the rest are well-known tech companies and large employers (Fortune 500,
@@ -21,25 +21,25 @@ const GREENHOUSE = on(
   `1910genetics abnormalsecurity aceable aclu adyen affirm agency agoda airbnb airtable akidolabs akunacapital albedo algolia align alloy
    alnylampharmaceuticals alpaca anaplan andurilindustries ansabiotechnologies anthropic aon3d apolloio applovin apptronik asana assemblyai asteralabs
    astranis astspacemobile attain attentive axial axiom axon baubap beam betterment bigid billcom bird bitgo bitmovin bitwarden block blockchain braze
-   brex bugcrowd bungie burnt cabify calendly calm camp carbonchain carrotfertility carta carvana chainguard checkr chime circleci clara clear cloudflare
+   brex bugcrowd bungie burnt cabify calendly calm camp carbonchain carrotfertility carta carvana chainguard checkr chime circleci clara clear clever cloudflare
    cloverhealth coast cockroachlabs coinbase colabsoftware collectivehealth collibra consensys contentful coreweave cortex coupang coursera courtyardinc
    cribl cultureamp culturebiosciences databricks datadog dataiku daybreakhealth deliveroo diligent discord doordashusa dots doximity dremio dropbox
    duolingo earnin elastic elite enveritas epicgames eqtcorporation everlaw faire fanduel fastly feanixbiotechnologies figma figureai fireblocks
    fiveringsllc fivetran flatironhealth flex flexport flyzipline focalsystems forward freenome gemini generallegalllp generalproximity getyourguide gigs
    ginkgobioworks gitlab givecampus gleanwork goatgroup gocardless godaddy gofundme golf gongio grafanalabs greenhouse grey groww guild gusto hackerrank
    haven hazel hearst heartaerospace hightouch homelight honeycomb honor hubblenetwork hubspotjobs humaninterest icarus imply instacart instawork
-   intercom inversionspace ionq janestreet jfrog jumptrading juno justworks kayak kernalbio khanacademy kite klaviyo komodohealth laika lattice
+   intercom inversionspace ionq janestreet jfrog jumptrading juno justworks kayak kernalbio khanacademy kikoff kite klaviyo komodohealth laika lattice
    launchdarkly legalist life360 limrun ltse lucidbots lucidmotors lumahealth luminate lyft marqvision mattermost mavenclinic maymobility medium mercury
    meruhealth mixpanel modernhealth momentus mongodb monsterenergy monzo moonshot motional mozilla n26 nabis natera navierai neo4j netlify neuralink
    newrelic nextdoor nintendo niraenergy novacredit nuro observeai ocadogroup odeko oklo okta oldmissioncapital omadahealth onemedical openwork ophelia
    orbitaloperations orcasecurity orchestra oscar osmosis oura overwatch pacaso pagerduty pairteam papa parsleyhealth paveakatroveinformationtechnologies
-   pelago peloton pendo pinterest planetlabs planetscale plume podium81 point72 porter postscript prodigal prolific pronto prospa pumpcareers purestorage
+   pelago peloton pendo pinterest placerlabs planetlabs planetscale plume podium81 point72 porter postscript prodigal prolific pronto prospa pumpcareers purestorage
    qualtrics qventus radar raven razorpaysoftwareprivatelimited recidiviz recursionpharmaceuticals reddit reflex relativity remoracarbon
    revolutionmedicines riotgames ripple robinhood roblox rocketlab roku roofr rosebud rubrik salesloft saltsecurity sambanovasystems samsara scaleai
    scopely seer sendbird sensei sentinellabs sharkninjaoperatingllc si sigmacomputing singlestore sirum sixfold smartasset smartsheet sofi sourcegraph91
    spaceium spacex squarespace stabilityai stackadapt stage starburst stripe submittable sumologic superapp superset swayable swiftskuinc swordhealth
    symphony taboola tailscale taketwo talkspace tanium taskrabbit tempo tenableinc tesseract tester thoughtworks tia tintai toast togetherai tpgcareers
-   tripadvisor trivago truveta twilio twistbioscience twitch uberfreight ubiquiti udemy understoodcare upstart upwork usenourish usergems veracyte vercel
+   tripadvisor trivago truveta twilio twistbioscience twitch uberfreight ubiquiti udemy understoodcare upstart upwork urbancompass usenourish usergems veracyte vercel
    veriff verisign verkada via virtu voxmedia waymo webflow whitespace wikimedia wise wizinc wolt workato wrike xai xendit yext yugabyte yuma zerocater
    zetaglobal ziprecruiter zocdoc zoominfo zscaler zuora zyngacareers`,
 );
@@ -48,7 +48,7 @@ const LEVER = on(
   'https://jobs.lever.co/',
   `aircall anchorage binance biorender bloom blue bolster canarytechnologies captivateiq cents Cofactr CollectlyInc copia coupa crypto culdesac dnb doola
    easypost-2 emilabs epsilon3 fampay Farcast finch findem finix finn fintual fleetzero getzuma gopuff greenlight gridware handoff hive houzz Instrumentl
-   jamcity jitxinc jobvite jumpcloud kabam kinter levelai livingcarbon lucidworks mashgin matchgroup maverickx meesho metabase metlife multiplylabs mytos
+   ion jamcity jitxinc jobvite jumpcloud kabam kinter levelai livingcarbon lucidworks mashgin matchgroup maverickx meesho metabase metlife multiplylabs mytos
    neon netomi newton nium olo openx Osmind outreach palantir pattern paytm people-ai picktrace pipedrive plexus plume postera pyka reachpower revi
    rigetti ro rover sapling secureframe shieldai shiru sila skyways smartcuts snappr sonatype spotify starkbank suger superside synapticure sysdig tala
    tendo Termius text theathletic thunkable toptal tovala trellis tryjeeves twodots unusual veepee veeva verifiable vida voltalabs wealthfront zerotier
@@ -60,15 +60,15 @@ const ASHBY = on(
   `1password 9-mothers abacum abridge abundant accord adaptyv AfterQuery Agave agent agentmail aios aiprise airbyte airgoods airwallex alchemy aleph
    alexai ambiencehealthcare ambient.ai ambition Ambral amplitude andromedasurgical anglehealth Anima answerthis anthrogen anyscale apolink
    apollo-graphql applied aqua-voice aragorn archil argon-ai arini arketa ARQ artie artisan artosai ashby ashby-embed-demo-org asimov aspora assemble
-   assembly Astro-Mechanica astronomer athena-hq atlas atob atomic atomic-invest atrato attio auctor aurelian aurorasolar authzed automat avallon avoca
-   Axel axle-health axleinsure bankjoy base-power baseten belvo benchling benepass beparallel bernard beyondreachlabs bild-ai billiontoone birdie
+   assembly Astro-Mechanica astronomer athena-hq atlas atlys atob atomic atomic-invest atrato attio auctor aurelian aurorasolar authzed automat avallon avoca
+   Axel axle-health axleinsure bankjoy base-power baseten beaconai belvo benchling benepass beparallel bernard beyondreachlabs bild-ai billiontoone birdie
    Blacksmith bland Blee blissway blueberrypediatrics bluedot bolna boom boostly bootloop brainbaselabs bree brettonai broccoli browserbase
-   bunkerhillhealth butter camber cambio Cambly campfire candidhealth capimoney capy cardboard caremessage caribou casca casco castle cedar centralize
+   bunkerhillhealth butter camber cambio Cambly campfire candidhealth cape capimoney capy cardboard caremessage caribou casca casco castle cedar centralize
    cerebras character charge-robotics chariot chestnut chronicle-labs cinder circleback circuithub claim-health claimsorted clarion ClassDojo claylabs
    clearly-ai clerk clickhouse clickup clipboard Close codes-health cognition cohere column comena commodityai Commure complete complir concourse
    conductor conduit confido confluent constellation context conveo convex-dev Coperniq corgi corvus-robotics cosine cosmic-robotics cranston craze
    credal crusoe ctgt curri cursor darwin datafold dataleap david-ai decagon decodahealth dedalus-labs Deepgram deepnote depot DiligenceSquared dispatch
-   ditto dmodel docker domu doppler double doublezero dovetail duffel dust dyneti e2b eightsleep ekho electricair elevenlabs ello eloquentai elyos
+   ditto dmodel docker domu doppler double doublezero dovetail duffel dust dyneti e2b earlymedia eightsleep ekho electricair elevenlabs ello eloquentai elyos
    emberai empirical encord Enode escape event-horizon-labs eventual every-io exa expensify extend f2-ai farel fathom.video fazeshift fernstone
    fieldguide finary finni-health FINNY finto firecrawl firstwork flagright.com flai fleek fleetline fleetworks flint flip float flowtel FlutterFlow flux
    formal formance formenergy fortuna-health found foundation freshpaint frontcareers fulcrum-inc furtherai fuse gamma garage gecko-robotics gen-digital
@@ -84,10 +84,10 @@ const ASHBY = on(
    oneleet onerobot oneschema openai opencall opensea orca oso outrival outschool outset overview padlet paradigmai paragon parallel pax-historia Pear-VC
    permitflow permutive perplexity persona Pharos phasebiolabs phoenix phonely photoroom physicalintelligence pika pinecone pipekit pirros pivotrobotics
    plaid plain plane ployai PointOne polar polymath poolside popl posh posthog powerus prefect prelim prism probablygenetic prometheus Promise
-   proofofhuman prose prosper-ai provision pulse pure pylon pylon-labs quicknode quindar quippy quora radiant railway Raindrop rallyuxr ramp reacher
+   proofofhuman prose prosper-ai provision pulse pure pylon pylon-labs quicknode quindar quippy quizlet-inc quora radiant railway Raindrop rallyuxr ramp reacher
    readme ready realitydefender Recall redis reducto regent relace relay render replit replo rescale resend retell-ai revenuecat reviserobotics rezi
    river rivet rivia roboflow rollstack runa runpod runway rutter ryvn safetykit sagecare SalesPatriot salient sapien sardine saronic sauna.ai sazabi
-   scape ScribdInc semgrep sentry serifhealth sf-tensor shadeform shapescale shepherd ShortStory sidekick sierra sieve sift SigNoz sim simetrik simple-ai
+   scape ScribdInc semgrep sentry serifhealth sesame sf-tensor shadeform shapescale shepherd ShortStory sidekick sierra sieve sift SigNoz sim simetrik simple-ai
    simplify skydio skydropx slash-financial slope snackpass snapdocs snapmagic snowflake snyk socket socure sola solidroad solva solveintelligence
    sorcerer spade span speak spellbrush Sphere spherecast Sphinx spotlight sprig spruceid stable stacker Stepful stilta stradahq stratum-ai strava stream
    subsets substack substrate suno sunset supabase supercell surveymonkey svix sweep switchboard sygaldry-technologies synthesia tailor tajir taktile
@@ -100,7 +100,7 @@ const ASHBY = on(
 
 const WORKABLE = on(
   'https://apply.workable.com/',
-  `aerones hokali huggingface intellecthq nalamoney open-252 ottimate platzi povio riot sorting-robotics tetrascience weekday-1 writesonic`,
+  `aerones fuseenergy hokali huggingface intellecthq nalamoney open-252 ottimate platzi povio riot sorting-robotics tetrascience weekday-1 writesonic`,
 );
 
 const GREENHOUSE_EU = on('https://boards.eu.greenhouse.io/', `jetbrains`);
@@ -113,7 +113,7 @@ const OWN_SITES = [
   'https://apply.careers.microsoft.com/careers',
 ];
 
-const SMARTRECRUITERS = on('https://jobs.smartrecruiters.com/', `AristaNetworks Deloitte6 Expeditors MicroStrategy1 PublicStorage ServiceNow TheNielsenCompany Wabtec WesternDigital`);
+const SMARTRECRUITERS = on('https://jobs.smartrecruiters.com/', `AristaNetworks Deloitte6 Expeditors MicroStrategy1 NBCUniversal3 PublicStorage ServiceNow TheNielsenCompany Wabtec WesternDigital`);
 
 /**
  * Workday career sites, as {tenant}.wd{n}/{site}. A check reads only the
@@ -155,7 +155,7 @@ const WORKDAY = `3m.wd1/Search aa.wd105/AA abbott.wd5/abbottcareers accenture.wd
    leidos.wd5/External lendingclub.wd1/External lennar.wd1/Lennar_Jobs lilly.wd115/LLY livenation.wd503/LNExternalSite logitech.wd5/Logitech
    lowes.wd5/LWS_External_CS lplfinancial.wd1/External lseg.wd3/Careers lumentum.wd5/LITE maersk.wd3/Maersk_Careers magna.wd3/Magna
    markelcorp.wd5/GlobalCareers marvell.wd1/marvellcareers massmutual.wd1/MMINDCareersite mastercard.wd1/CorporateCareers mckesson.wd3/External_Careers
-   mdlz.wd3/External medline.wd5/Medline medtronic.wd1/MedtronicCareers microchiphr.wd5/External micron.wd1/External mksinst.wd1/MKSCareersAmericas
+   mdlz.wd3/External mdtkangaroo.wd108/MiniMedCareers medline.wd5/Medline medtronic.wd1/MedtronicCareers microchiphr.wd5/External micron.wd1/External mksinst.wd1/MKSCareersAmericas
    mmc.wd1/MMC modernatx.wd1/M_tx monolithicpower.wd12/MPS_Careers morningstar.wd5/Americas motorolasolutions.wd5/Careers mpc.wd1/MPCCareers
    ms.wd5/External msd.wd5/SearchJobs mtb.wd5/MTB myhrabc.wd5/Global nasdaq.wd1/Global_External_Site nationwide.wd1/Nationwide_Career
    netflix.wd108/Netflix ngc.wd1/Northrop_Grumman_External_Site nike.wd1/nke nisource.wd1/NiSource northwesternmutual.wd5/CORPORATE-CAREERS
@@ -179,7 +179,7 @@ const WORKDAY = `3m.wd1/Search aa.wd105/AA abbott.wd5/abbottcareers accenture.wd
    trimble.wd1/TrimbleCareers troweprice.wd5/TRowePrice truist.wd1/Careers tsys.wd1/TSYS tysonfoods.wd5/TSN
    unilever.wd3/Unilever_Experienced_Professionals unitytech.wd1/Unity unum.wd1/External ur.wd1/URcareers usaa.wd1/USAAJOBSWD usbank.wd1/US_Bank_Careers
    usfoods.wd1/usfoodscareersExternal vanguard.wd5/vanguard_external ventas.wd503/ventas_careers venturegloballng.wd108/External_Careers veradigm.wd12/VR
-   veralto.wd1/VeraltoCorporateJobs vfc.wd5/vfc_careers viatris.wd5/External visa.wd5/Visa vrtx.wd501/Vertex_Careers vst.wd5/vistra_careers
+   veralto.wd1/VeraltoCorporateJobs verily.wd1/Verily_Careers vfc.wd5/vfc_careers viatris.wd5/External visa.wd5/Visa vrtx.wd501/Vertex_Careers vst.wd5/vistra_careers
    walmart.wd504/WalmartExternal warnerbros.wd5/global wasteconnections.wd1/Careers wf.wd1/WellsFargoJobs williams.wd5/External woodward.wd5/woodward
    workday.wd5/Workday workiva.wd503/careers wwecorp.wd5/TKO xcelenergy.wd1/External xylem.wd5/xylem-careers zalando.wd3/ZalandoSiteWD
    zebra.wd501/Zebra_careers zendesk.wd1/zendesk zillow.wd5/Zillow_Group_External zoetis.wd5/zoetis zoom.wd5/Zoom`
@@ -197,6 +197,7 @@ const ICIMS = [
   'https://careers-steeldynamics.icims.com/jobs',
   'https://careersen-itt-inc.icims.com/jobs',
   'https://globalcareers-msci.icims.com/jobs',
+  'https://homeoffice-na-urbn.icims.com/jobs',
   'https://uscareers-waters.icims.com/jobs',
 ];
 
