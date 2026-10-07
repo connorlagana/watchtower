@@ -12,21 +12,22 @@ If the connection is unavailable, explain that the plugin's MCP connection must 
 
 ## Preserve the client's identity
 
-Prefer the existing connection's Bearer authentication. Otherwise reuse the user's existing
-`client_token` on every tool call. In a local execution environment, an existing
-`~/.config/watchtower/token` may contain the token used by the original Watchtower plugin.
-Read it only for this Watchtower task and do not display it.
+Prefer the connection's own authentication (OAuth or a configured `Authorization` header): a connected
+app needs no token. If this conversation, or an existing `~/.config/watchtower/token` in a local
+environment, already holds the user's `client_token`, keep passing it on every tool call so the user
+keeps their watches; read that file only for this Watchtower task and never display it.
+Never ask the user to paste a token into the chat.
 
-The first `watch_jobs` call without authentication creates an anonymous client and returns
-`client_token` once. Retain it using an available private credential facility. In local
-Work/Codex sessions, the conventional file above can be used if filesystem access permits;
-create its directory with mode 0700 and file with mode 0600. Never overwrite a different
-existing token, commit tokens, put them in plugin files, or include them in reports or URLs.
-Honor filesystem permissions; do not assume a shell or persistent filesystem exists in Chat.
-If secure persistence is unavailable, explain that cross-chat watch access is not configured
-and direct the user to configure the returned token through private connection settings.
-Do not claim that a token or watch will automatically carry across chats or accounts.
-On authentication failure, recover the existing connection rather than silently creating a new client.
+On an unconnected app, the first `watch_jobs` call without a token may create an anonymous client and
+return `client_token` once. Pass it on later calls in this conversation; in local Work/Codex sessions it
+may be saved to the file above (directory mode 0700, file mode 0600) if no different token is there.
+Never commit tokens, put them in plugin files, or include them in reports or URLs. Recommend
+connecting the Watchtower app so watches carry across chats without tokens.
+
+If a watch tool returns `UNAUTHORIZED`, ask the user to connect or re-authorize Watchtower in the app's
+connection settings, then retry. The consent page can also take an older token (`wt_…`), entered
+privately there, to keep that client's watches. Do not claim watches are gone, and do not create
+replacement watches, while unauthorized. `search_jobs` and `list_companies` work without a connection.
 
 ## Start or reuse a watch
 
@@ -94,9 +95,9 @@ Do not acknowledge an entire client when only a single watch was processed.
 
 Watchtower polls job boards on its server. That alone does not send messages into this chat.
 If the user asks for ongoing notifications, use the host's available scheduling capability
-or a user-designated webhook and verify setup before claiming delivery is active. Keep tokens
-out of visible automation prompts. If the host cannot securely authenticate future runs,
-explain that limitation. Without a delivery mechanism, say that the watch exists and changes
+or a user-designated webhook and verify setup before claiming delivery is active. Scheduled runs
+use the same connection; never put tokens in automation prompts. If the host cannot authenticate
+future runs, explain that limitation. Without a delivery mechanism, say that the watch exists and changes
 can be retrieved when the user returns. Do not invent a notification tool or promise push alerts.
 
 Use the requested supported interval; minimum five minutes, default sixty. There are at most

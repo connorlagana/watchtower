@@ -1,12 +1,13 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerApiRoutes } from './api/routes.js';
+import { authChallenge, registerOAuthRoutes } from './api/oauth.js';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { buildMcpServer } from './mcp/server.js';
-import { bearerToken, clientOrigin } from './services/clients.js';
+import { authenticate, bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
 import { metrics, renderMetrics } from './services/metrics.js';
 import { clientBucket, enforce, hit, registerRateLimits } from './services/rateLimit.js';
@@ -120,14 +121,36 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   const searchLimit = { name: 'search', max: config.searchPerMinute, windowSeconds: 60 };
   await registerApiRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour, searchLimit });
 
+  // --- OAuth for MCP connections ---------------------------------------------
+  await registerOAuthRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour });
+
   // --- MCP (Streamable HTTP, stateless) ---------------------------------------
-  // Tokenless watch_* calls auto-create a client; they draw from the same shared
-  // per-address budget as POST /v1/clients so MCP isn't a way around it.
+  // Identity comes from the connection's bearer token (OAuth or a configured header), or from the client_token argument
+  // older conversations still pass. Without either, search_jobs and list_companies work; watch_jobs provisions an
+  // anonymous client while MCP_ANONYMOUS_PROVISIONING is on (drawing on the same per-address budget as POST /v1/clients),
+  // and the other watch tools answer with an OAuth challenge.
+  // A token that is sent but unknown, or a connection to /mcp?auth=required without one, gets an HTTP 401 challenge,
+  // which is what makes spec clients (Claude Code, Cursor, ...) run the OAuth flow.
   const allowProvision = async (ip: string) =>
     (await hit(db, clientBucket(ip), { name: 'client_creation', max: config.clientCreationPerHour, windowSeconds: 3600 })).allowed;
+  const challenge = (reply: import('fastify').FastifyReply, description: string) =>
+    reply
+      .code(401)
+      .header('www-authenticate', authChallenge(base, description))
+      .send({ jsonrpc: '2.0', error: { code: -32001, message: description }, id: null });
 
   app.post('/mcp', async (req, reply) => {
     const origin = clientOrigin(req.query, req.headers['user-agent']);
+    const headerToken = bearerToken(req.headers.authorization);
+    if (headerToken) {
+      try {
+        await authenticate(ctx, headerToken);
+      } catch {
+        return challenge(reply, 'The Watchtower token is unknown or revoked; authorize again.');
+      }
+    } else if ((req.query as { auth?: unknown } | undefined)?.auth === 'required') {
+      return challenge(reply, 'Authorize Watchtower to use watches.');
+    }
     const body = req.body as { method?: unknown; params?: { clientInfo?: { name?: unknown; version?: unknown } } } | undefined;
     if (body?.method === 'initialize') {
       const info = body.params?.clientInfo;
@@ -137,7 +160,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
       req.log.info({ mcp_client: client, mcp_client_version: typeof info?.version === 'string' ? info.version.slice(0, 40) : undefined, ref: origin.source }, 'mcp initialize');
     }
     const server = buildMcpServer(ctx, {
-      headerToken: bearerToken(req.headers.authorization),
+      headerToken,
       allowProvision: () => allowProvision(req.ip),
       limitSearch: () => enforce(db, clientBucket(req.ip), searchLimit),
       origin,

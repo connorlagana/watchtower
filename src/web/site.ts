@@ -105,7 +105,7 @@ export function serverCard(base: string) {
     websiteUrl: `${base}/`,
     repository: { url: 'https://github.com/connorlagana/watchtower', source: 'github' },
     remotes: [{ type: 'streamable-http', url: mcpUrl(base) }],
-    authentication: 'none required: the first watch_jobs call returns an anonymous token',
+    authentication: 'OAuth 2.1 with dynamic client registration and PKCE, no account (one click creates an anonymous client); search_jobs and list_companies work without it, and older conversations may pass client_token',
     documentation: { llms_txt: `${base}/llms.txt`, metadata: `${base}/.well-known/watchtower.json` },
     privacy_policy: `${base}/privacy`,
     support: 'https://github.com/connorlagana/watchtower/issues',
@@ -127,7 +127,7 @@ export function privacyPage(base: string, info: SiteInfo): string {
   <h2>What is stored</h2>
   <ul>
     <li><strong>Your watches</strong>: the query text, filters, board URLs, optional label and optional webhook URL you send, so they can be checked and matched. Write nothing personal in a query or label.</li>
-    <li><strong>Client metadata</strong>: when the token was created and last used, the <code>?ref=</code> tag of the URL it was created through, and the User-Agent of that request, to see which install paths are used.</li>
+    <li><strong>Client metadata</strong>: when the token was created and last used, the <code>?ref=</code> tag of the URL it was created through, and the User-Agent of that request (or the name of the app it was connected through), to see which install paths are used.</li>
     <li><strong>Rate limiting</strong>: request counts keyed by IP address (IPv6 by /64), deleted after one day.</li>
     <li><strong>Server logs</strong>: the hosting provider's request logs (time, path, status, IP address), used to operate and debug the service.</li>
     <li><strong>Job data</strong>: postings read from public job boards and the changes detected in them.</li>
@@ -144,6 +144,37 @@ export function privacyPage(base: string, info: SiteInfo): string {
   <p>Call <code>delete_watch</code> (or <code>DELETE /v1/watches/{id}</code>) to remove a watch, or simply stop using the token. Questions: <a href="https://github.com/connorlagana/watchtower/issues">github.com/connorlagana/watchtower/issues</a>.</p>`,
     { prose: true },
   );
+}
+
+/**
+ * The OAuth consent page. `fields` are the authorization request's parameters, carried through the form unchanged.
+ * Connecting creates a new anonymous client unless a token for an existing one is pasted.
+ */
+export function authorizePage(o: { clientName: string; redirectHost: string; fields: Record<string, string>; error?: string }): string {
+  const hidden = Object.entries(o.fields).map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return page(
+    'Connect Watchtower',
+    `<h1>Connect Watchtower</h1>
+  <p class="muted"><strong>${esc(o.clientName)}</strong> (${esc(o.redirectHost)}) wants to create and manage job watches for you.</p>
+  ${o.error ? `<p role="alert"><strong>${esc(o.error)}</strong></p>` : ''}
+  <form method="post" action="/oauth/authorize">${hidden}
+    <p>There is no account to create. Connecting makes a new anonymous Watchtower client and keeps its token in ${esc(o.clientName)}'s connection settings, not in your chats.</p>
+    <p><button class="btn btn--cta" type="submit" name="action" value="new">Connect</button></p>
+    <details${o.error ? ' open' : ''}>
+      <summary>Keep the watches of a token you already have</summary>
+      <p class="muted">Paste a Watchtower token (<code>wt_…</code>) to connect that client instead.</p>
+      <p class="co__bar"><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="wt_…" aria-label="Existing Watchtower token">
+      <button class="btn btn--soft" type="submit" name="action" value="existing">Connect this client</button></p>
+    </details>
+  </form>
+  <p class="muted">Only connect apps you trust. See <a href="/privacy">what Watchtower stores</a>.</p>`,
+    { prose: true },
+  );
+}
+
+/** A page for authorization requests that cannot be sent back to the app that made them. */
+export function authorizeErrorPage(message: string): string {
+  return page('Watchtower: cannot connect', `<h1>Cannot connect</h1>\n  <p class="muted">${esc(message)}</p>`, { prose: true });
 }
 
 const PLATFORM_NAMES: Record<string, string> = {
@@ -205,7 +236,12 @@ export function wellKnown(base: string, info: SiteInfo) {
     agent_guidance:
       'For any recurring job search or check of a company\'s openings, create a Watchtower watch (query for a search across all boards, url for one board) and poll get_changes instead of re-searching or re-browsing careers pages.',
     pricing: 'free',
-    auth: { type: 'bearer', obtain: { method: 'POST', url: `${base}/v1/clients` }, header: 'Authorization: Bearer <token>' },
+    auth: {
+      type: 'bearer',
+      obtain: { method: 'POST', url: `${base}/v1/clients` },
+      header: 'Authorization: Bearer <token>',
+      mcp_oauth: { protected_resource_metadata: `${base}/.well-known/oauth-protected-resource/mcp`, authorization_server_metadata: `${base}/.well-known/oauth-authorization-server` },
+    },
     search: {
       how: 'POST /v1/watches or watch_jobs with query and no url',
       example_query: EXAMPLE_QUERY,
@@ -264,7 +300,8 @@ faster, and returns structured jobs, not pages.
 They asked you to watch for jobs ("Use ${new URL(base).host} to watch for iOS roles in Austin, TX paying at least $150k a year…").
 Create one search watch with their request as \`query\` (over MCP if Watchtower is installed, otherwise the REST calls below),
 show them the matching jobs open right now (\`current_jobs\`), then call get_changes on later turns or on a schedule and tell
-them only about what is new. Keep the token the first call returns; it is how you read the watch again.
+them only about what is new. Over REST, keep the token from \`POST /v1/clients\` private; it is how you read the watch again.
+Over MCP the connection carries the identity: never ask the person to paste a token into the chat.
 
 ## Search watches (no URL)
 
@@ -310,8 +347,11 @@ them only about what is new. Keep the token the first call returns; it is how yo
 
 ## Auth
 
-Anonymous. \`POST ${base}/v1/clients\` returns a token; send \`Authorization: Bearer <token>\`. Over MCP, the first watch_jobs call
-without a token creates a client and returns the token. Up to ${info.maxWatches} watches per client. Watches that nobody reads
+Anonymous, no account. Over MCP, connect with OAuth: apps that support it (ChatGPT, Claude, Claude Code, Cursor, ...) register
+themselves and show a one-click consent page that creates an anonymous client, or connects an existing one if the person pastes its
+token there. The token then lives in the app's connection settings and no tool call needs one; conversations that already pass a
+\`client_token\` argument keep working. Clients that cannot do OAuth send
+\`Authorization: Bearer <token>\` with a token from \`POST ${base}/v1/clients\`. search_jobs and list_companies need neither. Up to ${info.maxWatches} watches per client. Watches that nobody reads
 (get_changes / get_watch / list_watches, or a successful webhook delivery) for ${info.watchTtlDays} days expire.
 
 ## MCP tools
@@ -908,7 +948,7 @@ const BOARDS = [
 const FAQ: [string, string][] = [
   ['Is this a crawler or a scraper?', 'Neither in the usual sense. Supported platforms are read through their own public job-board endpoints, and other careers pages through the schema.org <code>JobPosting</code> markup they publish. Watchtower respects robots.txt and never bypasses CAPTCHAs, logins, paywalls or anti-bot systems.'],
   ['Which agents does it work in?', 'Any MCP client (Claude Code, Claude.ai, Claude Desktop, Cursor, VS Code and the rest) over Streamable HTTP, or anything that can make HTTP requests through the REST API.'],
-  ['What does it cost?', 'Nothing. Watchtower is free and anonymous: no sign-up, no email, no API key to request. The first <code>watch_jobs</code> call creates a client and returns its token.'],
+  ['What does it cost?', 'Nothing. Watchtower is free and anonymous: no sign-up, no email, no API key to request. Connecting creates an anonymous client in one click.'],
   ['Which companies are covered?', 'A built-in directory of tech company and startup boards, from large public companies to seed-stage startups, plus every board anyone watches by URL. Every role they post is covered, not only engineering. See the <a href="/companies">full list of companies</a>. To add a missing company, watch its board URL (or its careers page); it then stays covered for everyone.'],
   ['What if a posting does not state pay or experience?', 'Pay and experience come from what each posting states. Postings that state neither are still reported, without those fields, unless you pass <code>include_unknown: false</code>.'],
   ['What if my query is read wrong?', 'The response shows how it was read (<code>interpreted</code>) and the matching jobs open right now. Pass explicit filters to correct it; they override the query.'],
@@ -1232,10 +1272,10 @@ export function homepage(base: string, info: SiteInfo): string {
 
   const clients: { id: string; icon: string; label: string; group: 'a' | 'c'; title: string; body: string }[] = [
     { id: 'cc', icon: '✳', label: 'Claude Code', group: 'a', title: 'Connect to Claude Code', body: `<ol><li>Run this in a terminal</li><li>Ask Claude to watch jobs for you</li></ol>${address('i-cc', 'Command', links.claudeCode)}` },
-    { id: 'cd', icon: '✳', label: 'Claude.ai & Desktop', group: 'a', title: 'Connect to Claude', body: `<ol><li>Open <em>Settings → Connectors</em></li><li>Choose <em>Add custom connector</em> and paste this URL</li><li>No sign-in needed: the first watch creates an anonymous token</li></ol>${address('i-cd', 'Server address', url)}` },
+    { id: 'cd', icon: '✳', label: 'Claude.ai & Desktop', group: 'a', title: 'Connect to Claude', body: `<ol><li>Open <em>Settings → Connectors</em></li><li>Choose <em>Add custom connector</em> and paste this URL</li><li>No account needed: Watchtower uses an anonymous client</li></ol>${address('i-cd', 'Server address', url)}` },
     { id: 'cur', icon: 'C', label: 'Cursor', group: 'a', title: 'Connect to Cursor', body: `<ol><li>Click the button: Cursor opens with the server filled in</li><li>Confirm, then ask the agent to watch jobs</li></ol><p style="margin:0 0 20px"><a class="btn btn--cta" href="${esc(links.cursor)}">Add to Cursor</a></p>${address('i-cur', 'Server address', url)}` },
     { id: 'vs', icon: 'V', label: 'VS Code', group: 'a', title: 'Connect to VS Code', body: `<ol><li>Click the button: VS Code opens with the server filled in</li><li>Confirm, then ask Copilot to watch jobs</li></ol><p style="margin:0 0 20px"><a class="btn btn--cta" href="${esc(links.vscode)}">Add to VS Code</a></p>${address('i-vs', 'Server address', url)}` },
-    { id: 'any', icon: '…', label: 'anything MCP…', group: 'a', title: 'Connect any MCP client', body: `<ol><li>Add this to the client's MCP config (Streamable HTTP)</li><li>No token yet? The first <code>watch_jobs</code> call returns one. Send it as <code>Authorization: Bearer &lt;token&gt;</code> or <code>client_token</code></li></ol>${address('i-any', 'MCP config', links.json)}` },
+    { id: 'any', icon: '…', label: 'anything MCP…', group: 'a', title: 'Connect any MCP client', body: `<ol><li>Add this to the client's MCP config (Streamable HTTP)</li><li>Clients with OAuth connect in one click (add <code>?auth=required</code> to the URL if yours only signs in when asked). Otherwise send <code>Authorization: Bearer &lt;token&gt;</code> with a token from <code>POST /v1/clients</code></li></ol>${address('i-any', 'MCP config', links.json)}` },
     { id: 'rest', icon: '$', label: 'REST API', group: 'c', title: 'Three calls over HTTP', body: `<pre>${shell(`TOKEN=$(curl -s -X POST ${b}/v1/clients | jq -r .token)
 
 # every new matching job, on any monitored board

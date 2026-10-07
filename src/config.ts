@@ -65,6 +65,11 @@ export interface Config {
   clientCreationPerHour: number;
   /** search_jobs calls per address per minute; each one scans every monitored board's open jobs. */
   searchPerMinute: number;
+  /**
+   * A tokenless MCP watch_jobs call creates an anonymous client and returns its token in the result, as before OAuth.
+   * Keep it on until the ChatGPT app's OAuth version is live; off, such calls get the OAuth challenge instead.
+   */
+  mcpAnonymousProvisioning: boolean;
 
   /** Monitor the built-in directory of boards so search watches (no URL) have something to match. */
   indexEnabled: boolean;
@@ -127,6 +132,7 @@ export function loadConfig(): Config {
     rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
     clientCreationPerHour: int('CLIENT_CREATION_PER_HOUR', 10),
     searchPerMinute: int('SEARCH_PER_MINUTE', 20),
+    mcpAnonymousProvisioning: bool('MCP_ANONYMOUS_PROVISIONING', true),
 
     indexEnabled: bool('INDEX_ENABLED', true),
     indexCheckIntervalSeconds: int('INDEX_CHECK_INTERVAL_SECONDS', 4 * 3600),

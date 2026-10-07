@@ -12,7 +12,7 @@ import { buildApp } from '../src/app.js';
 import { loadStats } from '../src/services/usage.js';
 import { loadConfig } from '../src/config.js';
 import { createPool, migrate, type Db } from '../src/db.js';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { checkResource } from '../src/services/checker.js';
 import type { Ctx } from '../src/services/context.js';
 import { releaseHost, tryAcquireHost } from '../src/services/hostLease.js';
@@ -110,6 +110,36 @@ async function newToken(): Promise<string> {
 }
 const check = (token: string, id: string) => api('POST', `/v1/watches/${id}/check`, token);
 
+/** Runs the OAuth flow the way an MCP app would: register, consent (new client or an existing token), exchange the code. */
+async function oauth(opts: { existingToken?: string; verifier?: string } = {}) {
+  const redirect = 'https://app.example/callback';
+  const reg = await app.inject({ method: 'POST', url: '/oauth/register', payload: { client_name: 'Test App', redirect_uris: [redirect] } });
+  const clientId = reg.json().client_id as string;
+  const verifier = randomBytes(32).toString('base64url');
+  const params = {
+    response_type: 'code', client_id: clientId, redirect_uri: redirect, state: 'st8', scope: 'watches',
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+  };
+  const form = new URLSearchParams({ ...params, action: opts.existingToken ? 'existing' : 'new', ...(opts.existingToken ? { token: opts.existingToken } : {}) });
+  const consent = await app.inject({ method: 'POST', url: '/oauth/authorize', headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: form.toString() });
+  const location = new URL((consent.headers.location as string | undefined) ?? 'about:blank');
+  const code = location.searchParams.get('code') ?? '';
+  const exchange = (v = opts.verifier ?? verifier) =>
+    app.inject({
+      method: 'POST', url: '/oauth/token', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ grant_type: 'authorization_code', code, code_verifier: v, client_id: clientId, redirect_uri: redirect }).toString(),
+    });
+  return { clientId, redirect, params, consent, location, code, verifier, exchange };
+}
+async function oauthToken(existingToken?: string): Promise<string> {
+  return (await (await oauth({ existingToken })).exchange()).json().access_token;
+}
+const connectMcp = async (token?: string, name = 'test') => {
+  const mcp = new McpClient({ name, version: '1.0.0' });
+  await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), token ? { requestInit: { headers: { authorization: `Bearer ${token}` } } } : undefined));
+  return mcp;
+};
+
 describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
   beforeAll(async () => {
     await new Promise<void>((r) => fixture.listen(0, '127.0.0.1', r));
@@ -186,11 +216,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     await app.inject({ method: 'POST', url: '/v1/clients?ref=bad%20tag!' });
     const mcp = new McpClient({ name: 'Claude-Code', version: '2.1.0' });
     await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp?ref=claude-plugin`)));
-    await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } });
     await mcp.close();
+    await oauthToken();
     const { rows } = await db.query<{ source: string | null; user_agent: string | null }>('SELECT source, user_agent FROM clients ORDER BY created_at');
-    expect(rows.map((r) => r.source)).toEqual(['smithery', null, 'claude-plugin']);
+    expect(rows.map((r) => r.source)).toEqual(['smithery', null, 'oauth']);
     expect(rows[0]!.user_agent).toBe('curl/8.7.1');
+    expect(rows[2]!.user_agent).toBe('Test App');
     const text = (await app.inject({ url: '/metrics' })).body;
     expect(text).toContain('watchtower_mcp_initialize_total{client="claude-code",ref="claude-plugin"} 1');
     expect(text).toContain('watchtower_clients_created_7d{source="smithery"} 1');
@@ -210,10 +241,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     await api('GET', '/v1/changes', token);
     await api('GET', '/v1/changes', token);
     const mcp = new McpClient({ name: 'cursor', version: '1.0.0' });
-    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
-    await mcp.callTool({ name: 'list_watches', arguments: { client_token: token } });
-    await mcp.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } }); // provisions a second user
+    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+    await mcp.callTool({ name: 'list_watches', arguments: {} });
     await mcp.close();
+    const second = await connectMcp(await oauthToken(), 'cursor'); // a second user, connected through OAuth
+    await second.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } });
+    await second.close();
 
     const { rows } = await db.query<{ tool: string; via: string; calls: number }>('SELECT tool, via, calls FROM usage_daily ORDER BY tool, via');
     expect(rows).toEqual([
@@ -226,7 +259,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(counts).toHaveLength(4);
     expect(counts).toEqual(
       expect.arrayContaining([
-        { metric: 'mcp_connect', dim: 'cursor', n: 1 },
+        { metric: 'mcp_connect', dim: 'cursor', n: 2 },
         { metric: 'page_view', dim: '/llms.txt|ai', n: 1 },
         { metric: 'page_view', dim: '/robots.txt|other', n: 1 },
         { metric: 'page_view', dim: '/|browser', n: 2 },
@@ -242,7 +275,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(stats.kpis).toMatchObject({ activeToday: 2, newToday: 2, callsToday: 5, peopleViewsToday: 2 });
     expect(stats.dailyActive).toHaveLength(30);
     expect(stats.dailyActive.at(-1)).toBe(2);
-    expect(stats.mcpClients).toEqual([{ client: 'cursor', d7: 1, d30: 1 }]);
+    expect(stats.mcpClients).toEqual([{ client: 'cursor', d7: 2, d30: 2 }]);
     expect(page.body).toContain('Daily active users');
     expect(page.body).toContain('<td>get_changes</td>');
   });
@@ -442,7 +475,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(await claimDue(ctx, 10)).toEqual([]);
   });
 
-  it('exposes all tools over MCP and auto-provisions a client', async () => {
+  it('exposes all tools over MCP and, for older conversations, still provisions a client and takes client_token', async () => {
     const mcp = new McpClient({ name: 'test', version: '1.0.0' });
     await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
     const { tools } = await mcp.listTools();
@@ -477,6 +510,137 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const del = JSON.parse(((await mcp.callTool({ name: 'delete_watch', arguments: { client_token: token, watch_id: created.watch.id } })) as any).content[0].text);
     expect(del.deleted).toBe(true);
     await mcp.close();
+  });
+
+  it('with provisioning off, takes the client only from the connection or client_token', async () => {
+    ctx.config.mcpAnonymousProvisioning = false;
+    onTestFinished(() => void (ctx.config.mcpAnonymousProvisioning = true));
+    const anon = await connectMcp();
+    const { tools } = await anon.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(['ack_changes', 'delete_watch', 'get_changes', 'get_watch', 'list_companies', 'list_watches', 'search_jobs', 'watch_jobs']);
+    expect(tools.find((t) => t.name === 'watch_jobs')!.description).toMatch(/INSTEAD OF re-running job searches or re-checking careers pages/);
+    // Directories require every tool to say whether it reads, writes or destroys.
+    for (const t of tools) {
+      expect(t.title ?? t.annotations?.title).toBeTruthy();
+      expect(t.annotations?.readOnlyHint === true || typeof t.annotations?.destructiveHint === 'boolean').toBe(true);
+      expect((t._meta as any)?.securitySchemes?.some((s: any) => s.type === 'oauth2')).toBe(true);
+    }
+    expect(tools.filter((t) => t.annotations?.destructiveHint).map((t) => t.name)).toEqual(['delete_watch']);
+
+    expect((tools.find((t) => t.name === 'delete_watch')!._meta as any).securitySchemes).toEqual([{ type: 'oauth2', scopes: ['watches'] }]);
+    // Without a connected client the watch tools answer with an OAuth challenge instead of creating a client.
+    const unauth = (await anon.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } })) as any;
+    expect(unauth.isError).toBe(true);
+    expect(JSON.parse(unauth.content[0].text).error).toBe('UNAUTHORIZED');
+    expect(unauth.content[0].text).not.toMatch(/wt_/);
+    expect(unauth._meta['mcp/www_authenticate'][0]).toContain(`resource_metadata="${ctx.config.publicBaseUrl}/.well-known/oauth-protected-resource/mcp"`);
+    expect(((await anon.callTool({ name: 'list_watches', arguments: {} })) as any).isError).toBe(true);
+    await anon.close();
+
+    const token = await oauthToken();
+    const mcp = await connectMcp(token);
+    const call = async (name: string, args: object = {}) => JSON.parse(((await mcp.callTool({ name, arguments: args as Record<string, unknown> })) as any).content[0].text);
+    const created = await call('watch_jobs', { url: `${origin}/page` });
+    expect(created).not.toHaveProperty('client_token');
+    const batch = await call('watch_jobs', { urls: [`${origin}/careers`], remote_only: true });
+    expect(batch.watches).toHaveLength(1);
+    expect(batch.errors).toEqual([]);
+    await call('delete_watch', { watch_id: batch.watches[0].id });
+    expect(((await mcp.callTool({ name: 'watch_jobs', arguments: {} })) as any).isError).toBe(true);
+
+    expect((await call('list_watches')).watches).toHaveLength(1);
+    expect((await call('get_watch', { watch_id: created.watch.id })).id).toBe(created.watch.id);
+    expect(await call('get_changes')).toMatchObject({ changes: [], has_more: false });
+    expect((await call('delete_watch', { watch_id: created.watch.id })).deleted).toBe(true);
+    await mcp.close();
+  });
+
+  it('authorizes MCP apps with OAuth and PKCE', async () => {
+    const base_ = ctx.config.publicBaseUrl;
+    const prm = (await app.inject({ url: '/.well-known/oauth-protected-resource/mcp' })).json();
+    expect(prm).toMatchObject({ resource: `${base_}/mcp`, authorization_servers: [base_] });
+    const asm = (await app.inject({ url: '/.well-known/oauth-authorization-server' })).json();
+    expect(asm).toMatchObject({ issuer: base_, code_challenge_methods_supported: ['S256'], registration_endpoint: `${base_}/oauth/register` });
+
+    // Registration only takes https (or loopback) redirects.
+    expect((await app.inject({ method: 'POST', url: '/oauth/register', payload: { redirect_uris: ['http://evil.example/cb'] } })).statusCode).toBe(400);
+
+    const flow = await oauth();
+    // The consent page names the app and its redirect host, and cannot be framed.
+    const page = await app.inject({ url: `/oauth/authorize?${new URLSearchParams(flow.params)}` });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain('Test App');
+    expect(page.body).toContain('app.example');
+    expect(page.headers['x-frame-options']).toBe('DENY');
+    // An unregistered redirect is never redirected to.
+    const bad = await app.inject({ url: `/oauth/authorize?${new URLSearchParams({ ...flow.params, redirect_uri: 'https://evil.example/cb' })}` });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.headers.location).toBeUndefined();
+    // No PKCE: the error goes back to the app.
+    const noPkce = await app.inject({ url: `/oauth/authorize?${new URLSearchParams({ ...flow.params, code_challenge: '' })}` });
+    expect(new URL(noPkce.headers.location as string).searchParams.get('error')).toBe('invalid_request');
+
+    expect(flow.location.origin + flow.location.pathname).toBe(flow.redirect);
+    expect(flow.location.searchParams.get('state')).toBe('st8');
+    expect((await flow.exchange('wrong-verifier-wrong-verifier-wrong-verifier')).json().error).toBe('invalid_grant');
+    // The failed attempt used up the code.
+    expect((await flow.exchange()).json().error).toBe('invalid_grant');
+
+    const ok = await oauth();
+    const res = await ok.exchange();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    const token = res.json().access_token as string;
+    expect(token).toMatch(/^wt_/);
+    expect((await ok.exchange()).json().error).toBe('invalid_grant');
+    expect((await api('GET', '/v1/watches', token)).status).toBe(200);
+
+    // Pasting an existing token connects that client, with its watches.
+    const legacy = await newToken();
+    const w = await api('POST', '/v1/watches', legacy, { url: `${origin}/page`, label: 'review demo' });
+    const linked = await oauthToken(legacy);
+    expect(linked).not.toBe(legacy);
+    const mcp = await connectMcp(linked);
+    const listed = JSON.parse(((await mcp.callTool({ name: 'list_watches', arguments: {} })) as any).content[0].text);
+    expect(listed.watches.map((x: any) => x.id)).toEqual([w.body.id]);
+    await mcp.close();
+    const wrong = await oauth({ existingToken: 'wt_notarealtokennotarealtoken' });
+    expect(wrong.consent.statusCode).toBe(400);
+    expect(wrong.consent.headers.location).toBeUndefined();
+
+    // Spec clients learn about OAuth from an HTTP 401: an unknown token, or /mcp?auth=required without one.
+    const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } };
+    const headers = { accept: 'application/json, text/event-stream', 'content-type': 'application/json' };
+    const unknown = await app.inject({ method: 'POST', url: '/mcp', headers: { ...headers, authorization: 'Bearer wt_notarealtokennotarealtoken' }, payload: init });
+    expect(unknown.statusCode).toBe(401);
+    expect(unknown.headers['www-authenticate']).toContain('resource_metadata=');
+    expect((await app.inject({ method: 'POST', url: '/mcp?auth=required', headers, payload: init })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/mcp?auth=required', headers: { ...headers, authorization: `Bearer ${token}` }, payload: init })).statusCode).toBe(200);
+  });
+
+  it('keeps the watches of a client_token when the user connects the app with OAuth', async () => {
+    // An older conversation made its watch with a token passed in tool arguments.
+    const legacy = await newToken();
+    const w = await api('POST', '/v1/watches', legacy, { url: `${origin}/page`, label: 'review demo' });
+    // The user then connects the app, which brings a fresh, empty client.
+    const mcp = await connectMcp(await oauthToken());
+    const call = async (name: string, args: object = {}) => JSON.parse(((await mcp.callTool({ name, arguments: args as Record<string, unknown> })) as any).content[0].text);
+    expect((await call('list_watches')).watches).toEqual([]);
+    // The conversation still passes its token: the connection moves to that client, so later calls without it see the watch too.
+    expect((await call('list_watches', { client_token: legacy })).watches.map((x: any) => x.id)).toEqual([w.body.id]);
+    expect((await call('list_watches')).watches.map((x: any) => x.id)).toEqual([w.body.id]);
+    expect((await call('delete_watch', { watch_id: w.body.id })).deleted).toBe(true);
+    await mcp.close();
+
+    // A connection whose own client already has watches is not moved.
+    const other = await newToken();
+    const busy = await connectMcp(await oauthToken());
+    const busyCall = async (name: string, args: object = {}) => JSON.parse(((await busy.callTool({ name, arguments: args as Record<string, unknown> })) as any).content[0].text);
+    const own = await busyCall('watch_jobs', { url: `${origin}/page` });
+    expect(own).not.toHaveProperty('client_token');
+    await busyCall('list_watches', { client_token: other });
+    expect((await busyCall('list_watches')).watches.map((x: any) => x.id)).toEqual([own.watch.id]);
+    await busy.close();
   });
 
   // ------------------------------------------------------------------ search watches (no URL)
@@ -649,15 +813,13 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     site.jobs = [{ id: 'a1', title: 'iOS Engineer', location: 'Austin', salary: [160_000, 190_000] }];
     await syncBoardIndex(ctx, [`${origin}/careers`]);
     await checkAll();
-    const mcp = new McpClient({ name: 'test', version: '1.0.0' });
-    await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    const mcp = await connectMcp(await oauthToken());
     const call = async (name: string, args: object) => JSON.parse(((await mcp.callTool({ name, arguments: args as Record<string, unknown> })) as any).content[0].text);
     const created = await call('watch_jobs', { query: QUERY });
-    expect(created.client_token).toMatch(/^wt_/);
     expect(created.watch).toMatchObject({ scope: 'all_boards', matching_jobs_count: 1, interpreted: { filters: { keywords: ['ios'], locations: ['austin'], min_salary: 150_000, max_experience_years: 6 } } });
     site.jobs.push({ id: 'a2', title: 'Senior iOS Engineer', location: 'Austin', salary: [180_000, 220_000] });
     await checkAll();
-    const changes = await call('get_changes', { client_token: created.client_token });
+    const changes = await call('get_changes', {});
     expect(changes.changes.map((c: any) => c.summary)).toEqual(['New job: Senior iOS Engineer (Austin)']);
     await mcp.close();
   });

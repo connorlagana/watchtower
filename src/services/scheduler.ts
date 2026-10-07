@@ -79,6 +79,7 @@ export async function runMaintenance(ctx: Ctx): Promise<MaintenanceReport | null
             AND NOT EXISTS (SELECT 1 FROM watches w WHERE w.client_id = c.id AND w.deleted_at IS NULL)`,
       );
       await q("DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'");
+      await q('DELETE FROM oauth_codes WHERE expires_at < now()');
       await q("DELETE FROM usage_daily WHERE day < now() - interval '400 days'");
       await q("DELETE FROM counts_daily WHERE day < now() - interval '400 days'");
       await q("DELETE FROM host_leases WHERE leased_until < now() - interval '1 hour'");

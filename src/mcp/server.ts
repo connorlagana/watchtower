@@ -4,7 +4,8 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { authenticate, createClient, type Client, type ClientOrigin } from '../services/clients.js';
+import { authChallenge, OAUTH_SCOPE } from '../api/oauth.js';
+import { adoptConnection, authenticate, createClient, type Client, type ClientOrigin } from '../services/clients.js';
 import { AppError, type Ctx } from '../services/context.js';
 import { countDaily, recordUse } from '../services/usage.js';
 import { listCompanies, MAX_COMPANIES_LIMIT } from '../services/companies.js';
@@ -27,15 +28,18 @@ Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIM
 Filters (keywords, all_keywords, exclude_keywords, locations, seniority, remote_only, min_salary, max_experience_years) can be passed
 explicitly and override the query. Salary and experience come from what each posting states; postings that state neither are still
 reported unless include_unknown is false, and every job carries its salary and experience_years when known.
-Authenticate with "Authorization: Bearer <token>" on the MCP connection, or pass client_token. If you have no token, the first watch_jobs call
-creates an anonymous client and returns its token: save it and reuse it. Each client may hold up to 50 watches. Watches you stop reading
+Watches belong to the client the MCP connection is authenticated as (OAuth, or an "Authorization: Bearer <token>" header); a
+connected app needs no token. If this conversation already uses a client_token from before, keep passing it. Never ask the user to paste
+a token into the chat: if a watch tool reports UNAUTHORIZED, ask them to connect or re-authorize Watchtower in the app's connection settings.
+Each client may hold up to 50 watches. Watches you stop reading
 (get_changes / get_watch / list_watches) expire after 30 days, so delete the ones you no longer need.
 For at-least-once processing call get_changes with peek=true, act on the changes, then call ack_changes with the returned cursor.`;
 
+/** Accepted so conversations that already use a token keep their watches; a connected app needs none. */
 const tokenArg = z
   .string()
   .optional()
-  .describe('Your Watchtower client token (wt_...). Optional if the MCP connection sends "Authorization: Bearer <token>".');
+  .describe('Only if this conversation already uses a Watchtower token (wt_...) from before the app was connected. Otherwise leave it out; never ask the user for one.');
 const intervalArg = z
   .number()
   .int()
@@ -67,18 +71,29 @@ const filterArgs = {
     .describe('Many postings state no pay or no years of experience. true (default) still reports them, without a salary / experience_years field; false reports only postings that state a qualifying value.'),
 };
 
-type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean; _meta?: Record<string, unknown> };
 
 function ok(value: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
 }
 
-function fail(err: unknown): ToolResult {
+/**
+ * An error result. UNAUTHORIZED carries the OAuth challenge in _meta, which is how ChatGPT learns to offer the user
+ * its "connect" flow for a tool call on a connection that has no token yet.
+ */
+function toolError(err: unknown, base: string): ToolResult {
   const e = err instanceof AppError ? err : new AppError(500, 'INTERNAL_ERROR', 'internal error');
-  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: e.code, message: e.message }) }] };
+  const result: ToolResult = { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: e.code, message: e.message }) }] };
+  if (e.code === 'UNAUTHORIZED') result._meta = { 'mcp/www_authenticate': [authChallenge(base, e.message)] };
+  return result;
 }
 
+/** Tools that work without a connected client, and tools that need one (Apps SDK security schemes). */
+const OPTIONAL_AUTH = { securitySchemes: [{ type: 'noauth' }, { type: 'oauth2', scopes: [OAUTH_SCOPE] }] };
+const REQUIRED_AUTH = { securitySchemes: [{ type: 'oauth2', scopes: [OAUTH_SCOPE] }] };
+
 export interface McpRequestContext {
+  /** The bearer token of the MCP connection (from OAuth or a configured header). */
   headerToken: string | undefined;
   /** Resolves false when this caller has used up its anonymous-client allowance. */
   allowProvision: () => Promise<boolean>;
@@ -90,18 +105,35 @@ export interface McpRequestContext {
 
 export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSearch, origin }: McpRequestContext): McpServer {
   const server = new McpServer({ name: 'watchtower', version: '0.1.0' }, { instructions: SERVER_INSTRUCTIONS });
+  const fail = (err: unknown) => toolError(err, ctx.config.publicBaseUrl);
+  const provisioning = ctx.config.mcpAnonymousProvisioning;
+  // While tokenless calls still get a client of their own, no watch tool strictly needs a connection.
+  const REQUIRES_AUTH = provisioning ? OPTIONAL_AUTH : REQUIRED_AUTH;
 
-  /** Authenticates the caller and records the call in the usage history. */
+  /**
+   * The caller's client: an explicit client_token (older conversations), else the connection's token. When both are
+   * present the connection is moved to the client_token's client if it holds no watches of its own, so the user's
+   * existing watches stay theirs after connecting the app. Records the call in the usage history.
+   */
   const auth = async (tool: string, argToken?: string): Promise<Client> => {
-    const client = await authenticate(ctx, argToken ?? headerToken);
+    let client: Client;
+    if (argToken) {
+      client = await authenticate(ctx, argToken);
+      if (headerToken && (await adoptConnection(ctx, headerToken, client.id))) ctx.log.info({ client: client.id }, 'oauth connection adopted an existing client');
+    } else if (headerToken) {
+      client = await authenticate(ctx, headerToken).catch(() => {
+        throw new AppError(401, 'UNAUTHORIZED', 'The Watchtower connection is no longer authorized. Ask the user to reconnect Watchtower in this app\'s connection settings, then retry.');
+      });
+    } else {
+      throw new AppError(401, 'UNAUTHORIZED', 'Watchtower is not connected yet. Ask the user to connect (authorize) Watchtower in this app\'s connection settings, then retry.');
+    }
     await recordUse(ctx, client.id, tool, 'mcp');
     return client;
   };
 
-  /** For watch creation: fall back to provisioning an anonymous client so agents can start with zero setup. */
+  /** For watch creation without any token: while enabled, provision an anonymous client as before OAuth. */
   const authOrProvision = async (argToken?: string): Promise<{ client: Client; newToken?: string }> => {
-    const token = argToken ?? headerToken;
-    if (token) return { client: await auth('watch_jobs', argToken) };
+    if (argToken || headerToken || !provisioning) return { client: await auth('watch_jobs', argToken) };
     if (!(await allowProvision())) throw new AppError(429, 'RATE_LIMITED', 'too many anonymous clients created from this address; reuse your existing token');
     const { client, token: newToken } = await createClient(ctx, origin);
     await recordUse(ctx, client.id, 'watch_jobs', 'mcp');
@@ -142,6 +174,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         client_token: tokenArg,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      _meta: REQUIRES_AUTH,
     },
     async (args) => {
       try {
@@ -152,7 +185,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
           : { watch: args.url ? await createWatch(ctx, client, { ...args, url: args.url }) : await createSearchWatch(ctx, client, args) };
         return ok(
           newToken
-            ? { client_token: newToken, token_note: 'New anonymous client created. Save this token and send it on future calls; it is shown only once.', ...result }
+            ? { client_token: newToken, token_note: 'New anonymous client created. Pass this as client_token on later calls in this conversation; it is shown only once. Connecting the Watchtower app makes tokens unnecessary.', ...result }
             : result,
         );
       } catch (err) {
@@ -189,6 +222,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         client_token: tokenArg,
       },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      _meta: OPTIONAL_AUTH,
     },
     async (args) => {
       try {
@@ -217,6 +251,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         client_token: tokenArg,
       },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      _meta: OPTIONAL_AUTH,
     },
     async (args) => {
       try {
@@ -246,6 +281,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         client_token: tokenArg,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      _meta: REQUIRES_AUTH,
     },
     async (args) => {
       try {
@@ -263,6 +299,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
       description: 'List all active watches for your client with their health, last check time and number of pending (undelivered) changes.',
       inputSchema: { client_token: tokenArg },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      _meta: REQUIRES_AUTH,
     },
     async (args) => {
       try {
@@ -282,6 +319,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         'watch created without a url. Use this to answer "what is open right now" without searching or fetching careers pages yourself.',
       inputSchema: { watch_id: z.string().uuid(), client_token: tokenArg },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      _meta: REQUIRES_AUTH,
     },
     async (args) => {
       try {
@@ -305,6 +343,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         client_token: tokenArg,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      _meta: REQUIRES_AUTH,
     },
     async (args) => {
       try {
@@ -322,6 +361,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
       description: 'Stop monitoring. Frees one of your watch slots. Delete watches you no longer need.',
       inputSchema: { watch_id: z.string().uuid(), client_token: tokenArg },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      _meta: REQUIRES_AUTH,
     },
     async (args) => {
       try {
