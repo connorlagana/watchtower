@@ -188,7 +188,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         offset: z.number().int().min(0).optional().describe('Skip this many matches; pass next_offset from the previous page.'),
         client_token: tokenArg,
       },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
@@ -216,7 +216,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         offset: z.number().int().min(0).optional().describe('Skip this many; pass next_offset from the previous page.'),
         client_token: tokenArg,
       },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
@@ -262,7 +262,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
       title: 'List your watches',
       description: 'List all active watches for your client with their health, last check time and number of pending (undelivered) changes.',
       inputSchema: { client_token: tokenArg },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
@@ -281,7 +281,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         'Get a watch with its status and the jobs currently open that match its filters: on its board, or across every monitored board for a ' +
         'watch created without a url. Use this to answer "what is open right now" without searching or fetching careers pages yourself.',
       inputSchema: { watch_id: z.string().uuid(), client_token: tokenArg },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {

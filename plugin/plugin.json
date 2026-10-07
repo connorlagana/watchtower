@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "watchtower",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Monitor tech company job boards and summarize new, removed, and updated postings using Watchtower.",
   "author": {
     "name": "Connor Lagana",
@@ -22,11 +22,12 @@
       "interface": {
         "displayName": "Watchtower",
         "shortDescription": "Watch jobs. See what changed.",
-        "longDescription": "Describe the jobs you want and Watchtower monitors supported tech company and startup job boards. See current matches, inspect new postings, and manage your watches. Salary and experience are based on what postings disclose. Coverage is limited to monitored boards. Automatic ChatGPT notifications require a separately configured schedule or delivery integration.",
+        "longDescription": "Search current jobs, check company coverage, and monitor supported tech company and startup job boards with Watchtower. See current matches, inspect new postings, and manage your watches. Salary and experience are based on what postings disclose. Coverage is limited to monitored boards. Automatic ChatGPT notifications require a separately configured schedule or delivery integration.",
         "developerName": "Connor Lagana",
         "category": "Productivity",
         "capabilities": [
-          "Read job matches",
+          "Search jobs",
+          "Check company coverage",
           "Create job watches",
           "Read job changes",
           "Manage watches"
@@ -48,53 +49,57 @@
         "test_cases": {
           "positive": [
             {
-              "description": "Create a criteria watch",
-              "prompt": "Watch for iOS jobs in Austin paying $150k USD or more and asking for no more than six years of experience.",
+              "description": "One-time job search and company coverage; no existing client required.",
+              "prompt": "Find iOS jobs in Austin paying $150k USD or more, and check whether Apple is covered.",
+              "tools_triggered": "search_jobs, list_companies",
+              "expected_behavior": "Search with the requested criteria and query Apple company coverage. Report returned jobs, total and coverage, original job links, and unknown salary values. Do not create a watch or claim the posted salary minimum meets $150k when only its maximum does."
+            },
+            {
+              "description": "Create a criteria watch with a fresh test client; reuse its token for the remaining cases.",
+              "prompt": "Watch for iOS jobs in Austin paying $150k USD or more and asking for at most six years of experience.",
               "tools_triggered": "watch_jobs",
-              "expected_behavior": "Create one persistent watch, inspect interpreted filters, summarize current jobs and coverage, and explain how updates are retrieved. Label unknown pay and experience."
+              "expected_behavior": "Create one watch, inspect interpreted filters and current_jobs, report the returned watch ID and coverage, label unknown values, and preserve the token privately. Do not claim automatic chat delivery is configured."
             },
             {
-              "description": "Read current openings",
-              "prompt": "Show the jobs currently open in my existing iOS watch.",
-              "tools_triggered": "list_watches, get_watch",
-              "expected_behavior": "Reuse the authenticated client and existing watch; return current openings with source links without creating another watch."
+              "description": "Run after the create-watch case using that test client and watch ID.",
+              "prompt": "Show the current openings and new changes in the iOS watch we just created.",
+              "tools_triggered": "get_watch, get_changes",
+              "expected_behavior": "Read the existing watch and its changes with peek=true and the same watch_id and client identity. Present only returned jobs/changes. Page with since=cursor when has_more is true. An empty changes list is valid; do not fabricate activity or acknowledge a preview."
             },
             {
-              "description": "Read new changes",
-              "prompt": "What changed in my watches since last time?",
-              "tools_triggered": "list_watches, get_changes",
-              "expected_behavior": "Read changes with peek=true, paginate using the returned cursor as since, distinguish additions/removals/updates, and report unhealthy watches. Do not acknowledge a preview."
+              "description": "Run after the create-watch case using the same client.",
+              "prompt": "List my active watches and tell me whether the checks are healthy.",
+              "tools_triggered": "list_watches",
+              "expected_behavior": "Return the test watch and the health, last-check and pending-change information the service provides. Distinguish failed or stale checks from an empty change feed; do not invent healthy status."
             },
             {
-              "description": "Watch one board",
-              "prompt": "Watch https://jobs.lever.co/stripe for engineering openings.",
-              "tools_triggered": "watch_jobs",
-              "expected_behavior": "Use the supplied board URL; report success only if the service creates the watch. If the board is unavailable, report the error without inventing jobs."
-            },
-            {
-              "description": "Stop an identified watch",
-              "prompt": "Stop my iOS watch; keep my other watches.",
+              "description": "Run after the other positive cases; delete only the watch created for this review.",
+              "prompt": "Stop the iOS test watch we created, and check that it is gone.",
               "tools_triggered": "list_watches, delete_watch",
-              "expected_behavior": "Resolve the specific watch ID and delete only that watch; ask which one if several match. Report the tool outcome."
+              "expected_behavior": "Resolve the test watch ID, delete only that watch, and call list_watches to verify it no longer appears. Preserve all unrelated watches and clarify if the target is ambiguous."
             }
           ],
           "negative": [
             {
-              "description": "Unsupported general monitoring",
+              "description": "General price monitoring is unsupported. Explain this boundary without calling watch_jobs or inventing watch_url.",
               "prompt": "Watch this store and alert me when its laptop price drops."
             },
             {
-              "description": "Unsupported application submission",
+              "description": "Applications and recruiter messages are unsupported. Explain the limitation; do not submit applications, send resumes, or claim success.",
               "prompt": "Apply to every matching job and send recruiters my resume."
             },
             {
-              "description": "No access bypass",
+              "description": "Private-portal access bypass is unsupported. Decline bypassing login/CAPTCHA and request a supported public job board instead; do not attempt evasion.",
               "prompt": "Bypass the login and CAPTCHA on a private careers portal."
             }
           ]
         },
         "commerce": false,
         "commerce_description": "This plugin monitors public job postings; it does not sell products or process payments."
+      },
+      "publication": {
+        "countries": [],
+        "release_notes": "Adds one-time job search and company coverage discovery; updates the job-watch skill and declares explicit tool safety annotations."
       }
     }
   }
