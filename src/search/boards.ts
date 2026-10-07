@@ -4,16 +4,19 @@
  * industry, that Watchtower monitors on its own, so a search watch (filters,
  * no URL) has postings to match.
  *
- * 1528 boards. Every one answered its platform's public listing API with
- * open jobs when the list was last verified (2026-10-06). Most were found with
+ * 1687 boards. Every one answered its platform's public listing API with
+ * open jobs when the list was last verified (2026-10-07). Most were found with
  * scripts/discover-boards.ts from the public Y Combinator company directory;
  * the rest are well-known tech companies and large employers (Fortune 500,
  * and the 500 largest US companies by market cap where their board is on a
- * supported platform), found from their careers pages and Workday tenants. A board that later
+ * supported platform), found from their careers pages and their Workday,
+ * Oracle Recruiting, Eightfold and SuccessFactors sites. A board that later
  * disappears just fails its checks and backs off; remove it here when you
  * notice. To add boards without editing this file, list their URLs in
  * INDEX_BOARDS_FILE.
  */
+import { SITES } from '../extract/successfactors.js';
+
 const on = (base: string, slugs: string) => slugs.split(/\s+/).filter(Boolean).map((slug) => `${base}${slug}`);
 
 const GREENHOUSE = on(
@@ -208,4 +211,108 @@ const WORKDAY_SITE = [
   'https://wd5.myworkdaysite.com/recruiting/vhr_unither/External',
 ];
 
-export const BOARDS: readonly string[] = [...GREENHOUSE, ...GREENHOUSE_EU, ...LEVER, ...ASHBY, ...WORKABLE, ...SMARTRECRUITERS, ...WORKDAY, ...WORKDAY_SITE, ...ICIMS, ...OWN_SITES];
+/** Oracle Recruiting career sites (see extract/oracle.ts, which also names each host's company). */
+const ORACLE = [
+  'https://fa-extu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Akamai
+  'https://eofd.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001', // Albertsons
+  'https://egug.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // American Express
+  'https://hdsn.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // American Tower
+  'https://fa-ewxu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/APS-Career-Site', // APS
+  'https://ibpcjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1004', // Ascension
+  'https://erqh.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001', // Atlantic Health System
+  'https://egud.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // AutoZone
+  'https://ejko.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3', // Blue Cross Blue Shield of Michigan
+  'https://eofe.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/BNY-Careers', // BNY
+  'https://ibmwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Brookdale Senior Living
+  'https://edmn.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Caesars Entertainment
+  'https://hdkk.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001', // Cedars-Sinai
+  'https://ibtcjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/careers', // Cherokee Federal
+  'https://fa-ewgu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001', // Chubb
+  'https://hcgn.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Citizens
+  'https://ecwl.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // ClubCorp
+  'https://hcwp.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Coherent
+  'https://fa-espx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Cummins
+  'https://hdep.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // Digital Realty
+  'https://ibxwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Dollar General
+  'https://ebxr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // DTCC
+  'https://hdjq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Emerson
+  'https://ecwr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Estes Express Lines
+  'https://ibpwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // First Horizon
+  'https://fa-etjd-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // FirstEnergy
+  'https://fa-etum-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/floridablue', // Florida Blue
+  'https://efds.fa.em5.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Ford
+  'https://edel.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001', // Fortinet
+  'https://ejta.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001', // Fortive
+  'https://fa-exvu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // GM Financial
+  'https://hdpc.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/LateralHiring', // Goldman Sachs
+  'https://fa-etnv-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/healthpartners', // HealthPartners
+  'https://fa-etqo-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Hexaware
+  'https://efet.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1009', // Hilton
+  'https://efuq.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/HiltonGrandVacations', // Hilton Grand Vacations
+  'https://ibqbjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Honeywell', // Honeywell
+  'https://icfcjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Aerospace', // Honeywell Aerospace
+  'https://fa-exty-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Howmet Aerospace
+  'https://elar.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Inova
+  'https://iazbqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // International Paper
+  'https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001', // JPMorganChase
+  'https://eluq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001', // Kroger
+  'https://ebwh.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001', // Macy's
+  'https://ejwl.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // Marriott
+  'https://fa-euwp-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Mayo-US', // Mayo Clinic
+  'https://hckd.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Molina Healthcare
+  'https://fa-esgu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Mortenson
+  'https://ejis.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // Mount Sinai
+  'https://fa-etbx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/nfcu', // Navy Federal Credit Union
+  'https://fa-evmr-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Nokia
+  'https://eppr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2', // Northwell Health
+  'https://egay.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_4001', // NOV
+  'https://ebfr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/jobs', // Oceaneering
+  'https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_45001', // Oracle
+  'https://hccz.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2', // Pearson
+  'https://evac.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Providence
+  'https://hdox.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Quest Diagnostics
+  'https://fa-exew-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // RB Global
+  'https://ekaw.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // Securitas
+  'https://ejhp.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2', // Sherwin-Williams
+  'https://emje.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/SouthernCompanyJobs', // Southern Company
+  'https://fa-exhh-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/StaplesInc', // Staples
+  'https://eodr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001', // Tenet Healthcare
+  'https://edbz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // Texas Instruments
+  'https://ejjc.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX', // TTX
+  'https://fa-etnf-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001', // UChicago Medicine
+  'https://iazuqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // UCSF
+  'https://fa-ewlq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // University of Tennessee
+  'https://eimy.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // UW Health
+  'https://ecsr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Vanderbilt University
+  'https://fa-exdv-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Careers', // Westfield Insurance
+  'https://emcm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/WMCareers', // WM
+  'https://eczd.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Yum! Brands
+  'https://fa-etvl-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1', // Zensar
+];
+
+/** Eightfold career sites (see extract/eightfold.ts). */
+const EIGHTFOLD = [
+  'https://caci.eightfold.ai/careers?domain=caci.com',
+  'https://dsm.eightfold.ai/careers?domain=dsm.com',
+  'https://eaton.eightfold.ai/careers?domain=eaton.com',
+  'https://ericsson.eightfold.ai/careers?domain=ericsson.com',
+  'https://infineon.eightfold.ai/careers?domain=infineon.com',
+  'https://jhu.eightfold.ai/careers?domain=jhu.edu',
+  'https://lamresearch.eightfold.ai/careers?domain=lamresearch.com',
+  'https://lockheedmartin.eightfold.ai/careers?domain=lockheedmartin.com',
+  'https://lumen.eightfold.ai/careers?domain=lumen.com',
+  'https://qualcomm.eightfold.ai/careers?domain=qualcomm.com',
+  'https://ralliant.eightfold.ai/careers?domain=ralliant.com',
+  'https://slb.eightfold.ai/careers?domain=slb.com',
+  'https://starbucks.eightfold.ai/careers?domain=starbucks.com',
+  'https://trinet.eightfold.ai/careers?domain=trinet.com',
+  'https://ukg.eightfold.ai/careers?domain=ukg.com',
+  'https://vialto.eightfold.ai/careers?domain=vialto.com',
+  'https://vodafone.eightfold.ai/careers?domain=vodafone.com',
+  'https://whirlpool.eightfold.ai/careers?domain=whirlpool.com',
+];
+
+/** SuccessFactors career sites, all hosts that extract/successfactors.ts knows. */
+const SUCCESSFACTORS = Object.keys(SITES).map((host) => `https://${host}/`);
+
+export const BOARDS: readonly string[] = [...GREENHOUSE, ...GREENHOUSE_EU, ...LEVER, ...ASHBY, ...WORKABLE, ...SMARTRECRUITERS, ...WORKDAY, ...WORKDAY_SITE, ...ICIMS, ...ORACLE, ...EIGHTFOLD, ...SUCCESSFACTORS, ...OWN_SITES];

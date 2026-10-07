@@ -15,7 +15,7 @@ export interface SiteInfo {
 
 export const CHANGE_TYPES = ['JOB_ADDED', 'JOB_REMOVED', 'JOB_UPDATED'];
 
-export const PLATFORMS = ['Greenhouse', 'Lever', 'Ashby', 'Workable', 'SmartRecruiters', 'Recruitee', 'Workday', 'iCIMS', 'Apple', 'Google', 'Amazon', 'Microsoft'];
+export const PLATFORMS = ['Greenhouse', 'Lever', 'Ashby', 'Workable', 'SmartRecruiters', 'Recruitee', 'Workday', 'iCIMS', 'Oracle Recruiting', 'Eightfold', 'SuccessFactors', 'Apple', 'Google', 'Amazon', 'Microsoft'];
 
 export const FILTERS = ['keywords', 'all_keywords', 'exclude_keywords', 'locations', 'seniority', 'remote_only', 'min_salary', 'max_experience_years'];
 
@@ -178,7 +178,7 @@ export function authorizeErrorPage(message: string): string {
 }
 
 const PLATFORM_NAMES: Record<string, string> = {
-  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workable: 'Workable', smartrecruiters: 'SmartRecruiters', recruitee: 'Recruitee', workday: 'Workday', icims: 'iCIMS', apple: 'Apple', google: 'Google', amazon: 'Amazon', microsoft: 'Microsoft',
+  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workable: 'Workable', smartrecruiters: 'SmartRecruiters', recruitee: 'Recruitee', workday: 'Workday', icims: 'iCIMS', oracle: 'Oracle Recruiting', eightfold: 'Eightfold', successfactors: 'SuccessFactors', apple: 'Apple', google: 'Google', amazon: 'Amazon', microsoft: 'Microsoft',
 };
 
 /** Every company in the directory, with a filter box. Search watches and search_jobs cover exactly these. */

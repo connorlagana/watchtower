@@ -263,6 +263,17 @@ describe('board discovery', () => {
     expect(detectBoardLinks('<html><body>We are hiring! Email jobs@acme.com</body></html>')).toEqual([]);
   });
 
+  it('finds Oracle Recruiting and Eightfold career sites', () => {
+    const html = `
+      <a href="https://acme.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/job/210704129">Teller</a>
+      <a href="https://ACME.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en-GB/sites/CX_1001/requisitions">All jobs</a>
+      <a href="https://acme.eightfold.ai/careers?query=barista&amp;domain=acme-coffee.com">Careers</a>`;
+    expect(detectBoardLinks(html)).toEqual([
+      'https://acme.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001',
+      'https://acme.eightfold.ai/careers?domain=acme-coffee.com',
+    ]);
+  });
+
   it('guesses board names from the domain and the company name, skipping ones too short to be distinctive', () => {
     expect(slugCandidates('Acme Robotics, Inc.', 'https://www.getacme.io/about')).toEqual(['getacme', 'acmerobotics', 'acme-robotics']);
     expect(slugCandidates('Zed', 'https://zed.dev')).toEqual([]);

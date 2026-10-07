@@ -3,6 +3,8 @@
  * SmartRecruiters or Recruitee board is fetched through that platform's
  * public job-board JSON API instead of scraping the HTML. Workday and iCIMS
  * sites need more than one request per check (see workday.ts / icims.ts).
+ * Oracle Recruiting, Eightfold and SuccessFactors sites are read through the
+ * site's own job search (see oracle.ts, eightfold.ts, successfactors.ts).
  * Apple, Google, Amazon and Microsoft run their own careers sites (see apple.ts,
  * google.ts, amazon.ts, microsoft.ts).
  * Any other careers page is read through its schema.org JobPosting markup.
@@ -11,11 +13,14 @@ import { collectAmazon, resolveAmazon, SITE_URL as AMAZON_SITE } from './amazon.
 import { collectApple, pageBody as applePageBody, resolveApple, SITE_URL as APPLE_SITE } from './apple.js';
 import { classify } from './classify.js';
 import { jobDetails, makeSalary, periodOf } from './details.js';
+import { collectEightfold, PAGE_SPACING_MS as EIGHTFOLD_PAGE_SPACING_MS, resolveEightfold, siteOf as eightfoldSiteOf, siteUrlFor as eightfoldSiteUrl } from './eightfold.js';
 import { extractHtml } from './html.js';
 import { collectMicrosoft, PAGE_SPACING_MS as MICROSOFT_PAGE_SPACING_MS, resolveMicrosoft, SITE_URL as MICROSOFT_SITE } from './microsoft.js';
 import { parseGoogleSitemap, resolveGoogle, SITE_URL as GOOGLE_SITE } from './google.js';
 import { collectIcims, resolveIcims, searchUrlFor } from './icims.js';
 import { extractJsonLd, parseJsonLdBlocks } from './jsonld.js';
+import { collectOracle, resolveOracle, siteUrlFor as oracleSiteUrl } from './oracle.js';
+import { collectSuccessFactors, MAX_PAGES as SF_MAX_PAGES, resolveSuccessFactors } from './successfactors.js';
 import type { AdapterName, Extraction, JobItem, Salary } from './types.js';
 import { collectWorkday, pageBody, resolveWorkday, siteUrlFor } from './workday.js';
 
@@ -99,6 +104,12 @@ export function resolveSource(input: string): ResolvedSource {
   if (amazon) return { adapter: 'amazon', fetchUrl: amazon.apiUrl };
   const microsoft = resolveMicrosoft(u);
   if (microsoft) return { adapter: 'microsoft', fetchUrl: microsoft.apiUrl };
+  const oracle = resolveOracle(u);
+  if (oracle) return { adapter: 'oracle', fetchUrl: oracle.apiUrl };
+  const eightfold = resolveEightfold(u);
+  if (eightfold) return { adapter: 'eightfold', fetchUrl: eightfold.apiUrl };
+  const successfactors = resolveSuccessFactors(u);
+  if (successfactors) return { adapter: 'successfactors', fetchUrl: successfactors.searchUrl };
   return { adapter: 'html', fetchUrl: canonicalUrl(input) };
 }
 
@@ -129,13 +140,16 @@ export function requestsPerCheck(adapter: AdapterName): number {
   if (adapter === 'icims') return 2;
   if (adapter === 'apple') return 15;
   if (adapter === 'amazon') return 3;
-  if (adapter === 'microsoft') return 5;
+  if (adapter === 'microsoft' || adapter === 'eightfold') return 5;
+  if (adapter === 'oracle') return 3;
+  if (adapter === 'successfactors') return SF_MAX_PAGES;
   return 1;
 }
 
 /** The least pause between the requests of one check, for sites that refuse requests in quick succession. */
 export function minPageSpacingMs(adapter: AdapterName): number {
-  return adapter === 'microsoft' ? MICROSOFT_PAGE_SPACING_MS : 0;
+  if (adapter === 'microsoft') return MICROSOFT_PAGE_SPACING_MS;
+  return adapter === 'eightfold' ? EIGHTFOLD_PAGE_SPACING_MS : 0;
 }
 
 type Rec = Record<string, unknown>;
@@ -317,6 +331,7 @@ const BOARD_SLUG: Partial<Record<AdapterName, RegExp>> = {
   google: /^https:\/\/www\.(google)\.com\/about\/careers\//,
   amazon: /^https:\/\/www\.(amazon)\.jobs\//,
   microsoft: /^https:\/\/apply\.careers\.(microsoft)\.com\//,
+  eightfold: /^https:\/\/([^./]+)\.eightfold\.ai\//,
 };
 
 /** A readable company name from the board's slug ("acme-robotics" → "Acme Robotics"), for sources that do not name the company. */
@@ -361,6 +376,12 @@ export function boardPageUrl(adapter: AdapterName, fetchUrl: string): string {
       return AMAZON_SITE;
     case 'microsoft':
       return MICROSOFT_SITE;
+    case 'oracle':
+      return oracleSiteUrl(fetchUrl);
+    case 'eightfold':
+      return eightfoldSiteUrl(fetchUrl);
+    case 'successfactors':
+      return `${new URL(fetchUrl).origin}/search/`;
     default:
       return fetchUrl;
   }
@@ -372,7 +393,7 @@ function withCompany(x: Extraction, adapter: AdapterName, fetchUrl: string): Ext
   return company ? { ...x, jobs: x.jobs.map((j) => (j.company ? j : { ...j, company })) } : x;
 }
 
-/** Extract jobs from a single response (every adapter except Workday, iCIMS, Apple, Amazon and Microsoft). */
+/** Extract jobs from a single response (every adapter that needs one request per check). */
 export function extract(adapter: AdapterName, body: string, contentType: string, opts: { baseUrl?: string } = {}): Extraction {
   return finalize(extractOne(adapter, body, contentType, opts));
 }
@@ -392,6 +413,9 @@ export async function collect(adapter: AdapterName, fetchUrl: string, primary: {
   if (adapter === 'google') return finalize(parseGoogleSitemap(primary.body));
   if (adapter === 'amazon') return finalize(await collectAmazon(primary.body, (url) => more(url)));
   if (adapter === 'microsoft') return finalize(await collectMicrosoft(primary.body, (url) => more(url)));
+  if (adapter === 'oracle') return finalize(await collectOracle(fetchUrl, primary.body, (url) => more(url)));
+  if (adapter === 'eightfold') return withCompany(finalize(await collectEightfold(eightfoldSiteOf(fetchUrl), primary.body, (url) => more(url))), adapter, fetchUrl);
+  if (adapter === 'successfactors') return finalize(await collectSuccessFactors(fetchUrl, primary.body, (url) => more(url)));
   if (adapter === 'icims') {
     // The search page is an enrichment: a failure there still leaves a complete job list.
     const search = await more(searchUrlFor(fetchUrl)).catch(() => null);

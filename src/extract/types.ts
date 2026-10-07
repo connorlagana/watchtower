@@ -1,7 +1,7 @@
-export type AdapterName = 'html' | 'greenhouse' | 'lever' | 'ashby' | 'workable' | 'smartrecruiters' | 'recruitee' | 'workday' | 'icims' | 'apple' | 'google' | 'amazon' | 'microsoft';
+export type AdapterName = 'html' | 'greenhouse' | 'lever' | 'ashby' | 'workable' | 'smartrecruiters' | 'recruitee' | 'workday' | 'icims' | 'apple' | 'google' | 'amazon' | 'microsoft' | 'oracle' | 'eightfold' | 'successfactors';
 
 /** Job-board platforms read through their own endpoints (as opposed to JobPosting markup on an arbitrary page). */
-export const PLATFORM_ADAPTERS: ReadonlySet<AdapterName> = new Set(['greenhouse', 'lever', 'ashby', 'workable', 'smartrecruiters', 'recruitee', 'workday', 'icims', 'apple', 'google', 'amazon', 'microsoft']);
+export const PLATFORM_ADAPTERS: ReadonlySet<AdapterName> = new Set(['greenhouse', 'lever', 'ashby', 'workable', 'smartrecruiters', 'recruitee', 'workday', 'icims', 'apple', 'google', 'amazon', 'microsoft', 'oracle', 'eightfold', 'successfactors']);
 
 export const SENIORITIES = ['intern', 'entry', 'mid', 'senior', 'staff', 'principal', 'manager', 'director'] as const;
 export type Seniority = (typeof SENIORITIES)[number];

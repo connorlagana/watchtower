@@ -26,6 +26,8 @@ const BOARD_LINKS: [RegExp, (m: RegExpExecArray) => string, number][] = [
   [/(?:jobs|careers)\.smartrecruiters\.com\/([\w-]+)/gi, (m) => `https://jobs.smartrecruiters.com/${m[1]}`, 1],
   [/\b([\w-]+)\.recruitee\.com/gi, (m) => `https://${m[1]!.toLowerCase()}.recruitee.com`, 1],
   [/\b([\w-]+\.wd\d+\.myworkdayjobs\.com)\/(?:[a-z]{2}-[A-Z]{2}\/)?([\w-]+)/g, (m) => `https://${m[1]!.toLowerCase()}/${m[2]}`, 1],
+  [/\b((?:[\w-]+\.)+oraclecloud\.com)\/hcmUI\/CandidateExperience\/[a-z]{2}(?:-[A-Z]{2})?\/sites\/([\w-]+)/g, (m) => `https://${m[1]!.toLowerCase()}/hcmUI/CandidateExperience/en/sites/${m[2]}`, 2],
+  [/\b([\w-]+)\.eightfold\.ai\/careers(?:\?(?:[^"'\s<>]*?&(?:amp;)?)?domain=([\w.-]+))?/gi, (m) => `https://${m[1]!.toLowerCase()}.eightfold.ai/careers${m[2] ? `?domain=${m[2].toLowerCase()}` : ''}`, 1],
 ];
 
 /** Board URLs a page links to or embeds, most-mentioned first. Only URLs Watchtower reads through a platform adapter. */

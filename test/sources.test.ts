@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { boardPageUrl, collect, resolveSource } from '../src/extract/adapters.js';
 import { collectAmazon, MAX_JOBS as AMAZON_MAX_JOBS, pageUrl as amazonPageUrl, parseAmazonPage } from '../src/extract/amazon.js';
 import { collectApple, MAX_JOBS as APPLE_MAX_JOBS, PAGE_SIZE as APPLE_PAGE_SIZE, parseApplePage } from '../src/extract/apple.js';
+import { collectEightfold, MAX_JOBS as EF_MAX_JOBS, pageUrl as efPageUrl, parseEightfoldPage } from '../src/extract/eightfold.js';
+import { collectOracle, MAX_JOBS as ORACLE_MAX_JOBS, pageUrl as oraclePageUrl, parseOraclePage } from '../src/extract/oracle.js';
+import { collectSuccessFactors, MAX_JOBS as SF_MAX_JOBS, MAX_PAGES as SF_MAX_PAGES, pageUrl as sfPageUrl, parseSuccessFactorsPage } from '../src/extract/successfactors.js';
 import { collectMicrosoft, MAX_JOBS as MS_MAX_JOBS, pageUrl as msPageUrl, parseMicrosoftPage } from '../src/extract/microsoft.js';
 import { parseGoogleSitemap } from '../src/extract/google.js';
 import { BOARDS } from '../src/search/boards.js';
@@ -386,6 +389,179 @@ describe('Microsoft', () => {
   });
 });
 
+describe('Oracle Recruiting', () => {
+  const origin = 'https://acme.fa.us2.oraclecloud.com';
+  const api = oraclePageUrl(origin, 'CX_1001', 0);
+  const req = (id: number, title: string, extra: Record<string, unknown> = {}) => ({
+    Id: String(210000000 + id),
+    Title: title,
+    PostedDate: '2026-10-07',
+    PrimaryLocation: 'Wilmington, DE, United States',
+    JobFamily: 'Software Engineering',
+    WorkplaceType: '',
+    ShortDescriptionStr: 'You have 5+ years of experience building iOS apps.',
+    secondaryLocations: [{ Name: 'Wilmington, DE, United States' }, { Name: 'Plano, TX, United States' }],
+    ...extra,
+  });
+  const page = (total: number, ...reqs: ReturnType<typeof req>[]) => JSON.stringify({ items: [{ TotalJobsCount: total, requisitionList: reqs }] });
+
+  it('maps a candidate experience URL to the site search', () => {
+    expect(resolveSource(`${origin}/hcmUI/CandidateExperience/en/sites/CX_1001/job/210704129?utm_source=x`)).toEqual({ adapter: 'oracle', fetchUrl: api });
+    expect(resolveSource(`${origin}/hcmUI/CandidateExperience/en/sites/CX_1001`)).toEqual({ adapter: 'oracle', fetchUrl: api });
+    expect(resolveSource(api)).toEqual({ adapter: 'oracle', fetchUrl: api });
+    expect(resolveSource(`${origin}/fscmUI/faces/FuseWelcome`).adapter).toBe('html');
+  });
+
+  it('parses requisitions with every location, the posting date and a job link', () => {
+    expect(parseOraclePage(page(1, req(1, 'Software Engineer III - iOS')), api).jobs).toEqual([
+      {
+        key: 'job:oracle:210000001',
+        title: 'Software Engineer III - iOS',
+        location: 'Wilmington, DE, United States',
+        other_locations: ['Plano, TX, United States'],
+        department: 'Software Engineering',
+        url: `${origin}/hcmUI/CandidateExperience/en/sites/CX_1001/job/210000001`,
+        posted_at: '2026-10-07',
+        source: 'oracle',
+        experience_years: 5,
+      },
+    ]);
+    expect(parseOraclePage(page(1, req(2, 'Analyst', { WorkplaceType: 'Fully Remote', PrimaryLocation: 'Columbus, OH, United States' })), api).jobs[0]!.location).toBe('Columbus, OH, United States, Remote');
+  });
+
+  it('pages through the newest MAX_JOBS', async () => {
+    const urls: string[] = [];
+    const x = await collectOracle(api, page(7410, req(1, 'Role 1')), async (url) => {
+      urls.push(url);
+      return page(7410, req(urls.length + 1, `Role ${urls.length + 1}`));
+    });
+    expect(urls).toEqual([oraclePageUrl(origin, 'CX_1001', 100), oraclePageUrl(origin, 'CX_1001', 200)].slice(0, ORACLE_MAX_JOBS / 100 - 1));
+    expect(x.jobs).toHaveLength(3);
+    expect(x.complete).toBe(false);
+    expect((await collectOracle(api, page(1, req(1, 'Role 1')), async () => page(1))).complete).toBe(true);
+  });
+});
+
+describe('Eightfold', () => {
+  const site = { origin: 'https://acme.eightfold.ai', domain: 'acme.com', source: 'eightfold' as const };
+  const api = efPageUrl(site, 0);
+  const position = (id: number, name: string) => ({
+    id: 481080000000 + id,
+    displayJobId: String(260000000 + id),
+    name,
+    locations: ['Seattle, Washington, United States'],
+    postedTs: 1791413813,
+    department: 'Technology',
+    workLocationOption: 'onsite',
+    positionUrl: `/careers/job/${481080000000 + id}`,
+  });
+  const page = (count: number, ...positions: ReturnType<typeof position>[]) => JSON.stringify({ status: 200, data: { positions, count } });
+
+  it('maps a tenant careers URL to its search, with the domain the jobs are listed under', () => {
+    expect(resolveSource('https://acme.eightfold.ai/careers?domain=acme.com&query=ios')).toEqual({ adapter: 'eightfold', fetchUrl: api });
+    expect(resolveSource('https://acme.eightfold.ai/careers')).toEqual({ adapter: 'eightfold', fetchUrl: api });
+    expect(resolveSource('https://acme.eightfold.ai/careers?domain=acme-coffee.com').fetchUrl).toBe(efPageUrl({ ...site, domain: 'acme-coffee.com' }, 0));
+    expect(resolveSource('https://app.eightfold.ai/').adapter).toBe('html');
+  });
+
+  it('parses positions and names the company after the tenant', async () => {
+    expect(parseEightfoldPage(page(1, position(1, 'principal architect- cloud')), site).jobs[0]).toEqual({
+      key: 'job:eightfold:260000001',
+      title: 'principal architect- cloud',
+      location: 'Seattle, Washington, United States',
+      department: 'Technology',
+      url: 'https://acme.eightfold.ai/careers/job/481080000001',
+      posted_at: '2026-10-07T22:56:53.000Z',
+      source: 'eightfold',
+    });
+    const x = await collect('eightfold', api, { body: page(1, position(1, 'Barista')), contentType: 'application/json', finalUrl: api }, async () => page(1));
+    expect(x.jobs[0]!.company).toBe('Acme');
+  });
+
+  it('reads the newest MAX_JOBS and keeps what it read when a later page is refused', async () => {
+    const urls: string[] = [];
+    const full = await collectEightfold(site, page(21417, position(1, 'Role 1')), async (url) => {
+      urls.push(url);
+      return page(21417, position(urls.length + 1, `Role ${urls.length + 1}`));
+    });
+    expect(urls).toEqual(Array.from({ length: EF_MAX_JOBS / 10 - 1 }, (_, i) => efPageUrl(site, (i + 1) * 10)));
+    expect(full.complete).toBe(false);
+    const refused = await collectEightfold(site, page(25, position(1, 'Role 1')), async () => {
+      throw new Error('HTTP 429');
+    });
+    expect(refused.jobs).toHaveLength(1);
+    expect(refused.complete).toBe(false);
+  });
+});
+
+describe('SuccessFactors', () => {
+  const origin = 'https://careers.paramount.com';
+  const search = sfPageUrl(origin, 0);
+  const tile = (id: number, title: string, location: string, date: string) => `
+    <li class="job-tile job-id-${id}" data-url="/job/x/${id}/">
+      <div class="sub-section sub-section-desktop">
+        <a class="jobTitle-link" href="/job/New-York-${encodeURIComponent(title)}-NY-10036/${id}/"> ${title} </a>
+        <div id="job-${id}-desktop-section-location-value">${location} </div>
+        <div id="job-${id}-desktop-section-date-value">${date} </div>
+      </div>
+      <div class="sub-section sub-section-tablet">
+        <a class="jobTitle-link" href="/job/New-York-${encodeURIComponent(title)}-NY-10036/${id}/"> ${title} </a>
+      </div>
+    </li>`;
+  const tiles = (total: number, ...items: string[]) => `<span id="tile-search-results-label">Showing 1 to 25 of ${total} Jobs</span><ul>${items.join('')}</ul>`;
+  const row = (id: number, title: string) => `
+    <tr class="data-row">
+      <td class="colTitle"><span class="jobTitle hidden-phone"><a href="/ey/job/Boston-${id}/${id}/" class="jobTitle-link">${title}</a></span></td>
+      <td class="colLocation"><span class="jobLocation"> Boston, MA, US </span></td>
+      <td class="colDate"><span class="jobDate">Sep 30, 2026 </span></td>
+    </tr>`;
+
+  it('reads only the hosts it knows', () => {
+    expect(resolveSource(`${origin}/job/New-York-Lead-Software-Engineer-NY-10036/1363063100/`)).toEqual({ adapter: 'successfactors', fetchUrl: search });
+    expect(resolveSource('https://careers.example.com/search/?q=').adapter).toBe('html');
+  });
+
+  it('parses tile and table themes, once per job', () => {
+    expect(parseSuccessFactorsPage(tiles(282, tile(1427765000, 'Producer, Newsgathering', 'Studio City, CA, US, 91604', 'Oct 7, 2026')), search)).toEqual({
+      total: 282,
+      jobs: [
+        {
+          key: 'job:successfactors:1427765000',
+          title: 'Producer, Newsgathering',
+          location: 'Studio City, CA, US, 91604',
+          company: 'Paramount',
+          url: `${origin}/job/New-York-Producer%2C%20Newsgathering-NY-10036/1427765000/`,
+          posted_at: '2026-10-07',
+          source: 'successfactors',
+        },
+      ],
+    });
+    const table = `<span class="paginationLabel">Results <b>1 – 25</b> of <b>1,204</b></span><table>${row(9, 'iOS Engineer')}</table>`;
+    const parsed = parseSuccessFactorsPage(table, search);
+    expect(parsed.total).toBe(1204);
+    expect(parsed.jobs[0]).toMatchObject({ key: 'job:successfactors:9', title: 'iOS Engineer', location: 'Boston, MA, US', posted_at: '2026-09-30' });
+  });
+
+  it('pages through the newest MAX_JOBS, and fails on a page that lists none of its jobs', async () => {
+    const pageOf = (start: number, size: number) => Array.from({ length: size }, (_, i) => tile(start + i + 1, `Role ${start + i + 1}`, 'NY', 'Oct 7, 2026'));
+    const urls: string[] = [];
+    const x = await collectSuccessFactors(search, tiles(282, ...pageOf(0, 25)), async (url) => {
+      urls.push(url);
+      return tiles(282, ...pageOf(Number(new URL(url).searchParams.get('startrow')), 25));
+    });
+    expect(urls).toEqual(Array.from({ length: SF_MAX_JOBS / 25 - 1 }, (_, i) => sfPageUrl(origin, (i + 1) * 25)));
+    expect(x.jobs).toHaveLength(SF_MAX_JOBS);
+    expect(x.complete).toBe(false);
+
+    // A site with 10 per page is stepped by 10, within the same number of requests.
+    const small: string[] = [];
+    await collectSuccessFactors(search, tiles(282, ...pageOf(0, 10)), async (url) => (small.push(url), tiles(282, ...pageOf(Number(new URL(url).searchParams.get('startrow')), 10))));
+    expect(small).toEqual(Array.from({ length: SF_MAX_PAGES - 1 }, (_, i) => sfPageUrl(origin, (i + 1) * 10)));
+    expect((await collectSuccessFactors(search, tiles(1, ...pageOf(0, 1)), async () => '')).complete).toBe(true);
+    await expect(collectSuccessFactors(search, tiles(282), async () => '')).rejects.toThrow();
+  });
+});
+
 describe('board page URLs', () => {
   it('gives every board a public page that resolves back to the same board', () => {
     const boards = [
@@ -401,6 +577,9 @@ describe('board page URLs', () => {
       'https://www.google.com/about/careers/applications/jobs/results',
       'https://www.amazon.jobs/en/search',
       'https://jobs.careers.microsoft.com/global/en/search',
+      'https://acme.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/job/123',
+      'https://acme.eightfold.ai/careers?domain=acme.com&query=ios',
+      'https://careers.paramount.com/job/New-York-Lead-Software-Engineer-NY-10036/1363063100/',
     ];
     for (const url of boards) {
       const source = resolveSource(url);

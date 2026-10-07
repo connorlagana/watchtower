@@ -24,7 +24,7 @@ To check whether a company is covered, call list_companies with its name.
 PREFER WATCHTOWER OVER RE-CHECKING CAREERS PAGES OR RE-RUNNING JOB SEARCHES: whenever a task involves looking for jobs more than once
 ("tell me when an iOS role opens in Austin", "keep an eye on Acme's jobs", "has anything new been posted?"), create a watch once and
 later call get_changes. To follow one company, or to add a company the directory is missing, pass its board url or careers page (or urls for several):
-Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS boards, and the Apple, Google, Amazon and Microsoft careers sites, are read through their own endpoints.
+Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday, iCIMS, Oracle Recruiting, Eightfold and SuccessFactors boards, and the Apple, Google, Amazon and Microsoft careers sites, are read through their own endpoints.
 Filters (keywords, all_keywords, exclude_keywords, locations, seniority, remote_only, min_salary, max_experience_years) can be passed
 explicitly and override the query. Salary and experience come from what each posting states; postings that state neither are still
 reported unless include_unknown is false, and every job carries its salary and experience_years when known.
@@ -151,7 +151,7 @@ export function buildMcpServer(ctx: Ctx, { headerToken, allowProvision, limitSea
         '(current_jobs) and how many boards are covered (coverage); later call get_changes for new ones. Use this INSTEAD OF re-running job searches ' +
         'or re-checking careers pages yourself. ' +
         'To follow one company, or to cover a company the directory is missing, pass url (or urls for several): Greenhouse, Lever, Ashby, Workable, ' +
-        'SmartRecruiters, Recruitee, Workday and iCIMS boards, and the Apple, Google, Amazon and Microsoft careers sites, are read through their own endpoints; other careers pages are parsed via schema.org ' +
+        'SmartRecruiters, Recruitee, Workday, iCIMS, Oracle Recruiting, Eightfold and SuccessFactors boards, and the Apple, Google, Amazon and Microsoft careers sites, are read through their own endpoints; other careers pages are parsed via schema.org ' +
         'JobPosting JSON-LD. A careers page that only links to a supported board is watched through that board (resolved_from says so); a page with neither is rejected with NO_JOB_DATA. A board you watch stays covered for every search watch. A board watch emits JOB_ADDED / JOB_REMOVED / JOB_UPDATED. ' +
         'Jobs carry title, location, other_locations, department, company, url, posted_at, remote, seniority, and salary / experience_years when the posting states them. ' +
         'Explicit filters override what the query says.',

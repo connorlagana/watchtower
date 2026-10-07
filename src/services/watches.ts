@@ -447,7 +447,7 @@ export async function createWatch(ctx: Ctx, client: Client, input: CreateWatchIn
       throw new AppError(
         422,
         'NO_JOB_DATA',
-        'no job postings found at this URL. Watchtower reads Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday and iCIMS boards, the Apple, Google, Amazon and Microsoft careers sites, ' +
+        'no job postings found at this URL. Watchtower reads Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday, iCIMS, Oracle Recruiting, Eightfold and SuccessFactors boards, the Apple, Google, Amazon and Microsoft careers sites, ' +
           'and other careers pages that publish schema.org JobPosting markup. If the company uses one of those platforms, pass the board URL instead.',
       );
     }
