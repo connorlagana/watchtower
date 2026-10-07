@@ -42,8 +42,8 @@
         ],
         "brandColor": "#6DB300",
         "brandColorDark": "#A3E635",
-        "composerIcon": "./assets/icon.svg",
-        "logo": "./assets/icon.svg",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png",
         "termsOfServiceURL": "https://watchtower.lat/terms"
       },
       "review": {
