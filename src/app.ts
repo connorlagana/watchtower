@@ -13,7 +13,7 @@ import { clientBucket, enforce, hit, registerRateLimits } from './services/rateL
 import { agentClass, countDaily, loadStats } from './services/usage.js';
 import { loadCompanies } from './services/companies.js';
 import { statsPage } from './web/stats.js';
-import { companiesPage, docsPage, FONT_FILES, homepage, llmsTxt, privacyPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
+import { companiesPage, docsPage, FONT_FILES, homepage, llmsTxt, privacyPage, termsPage, robotsTxt, serverCard, wellKnown } from './web/site.js';
 
 export interface BuildOptions {
   logger?: boolean;
@@ -35,7 +35,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   });
 
   // Daily view counts for the public pages, split into people, AI assistants and other bots. Nothing per visitor is kept.
-  const countedPages = new Set(['/', '/companies', '/llms.txt', '/privacy', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
+  const countedPages = new Set(['/', '/companies', '/llms.txt', '/privacy', '/terms', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
   app.addHook('onResponse', async (req, reply) => {
     const path = req.url.split('?')[0]!;
     if (req.method === 'GET' && reply.statusCode === 200 && countedPages.has(path)) {
@@ -71,6 +71,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
     if (!companiesHtml || Date.now() - companiesHtml.at > 5 * 60_000) companiesHtml = { at: Date.now(), html: companiesPage(await loadCompanies(ctx)) };
     return reply.type('text/html; charset=utf-8').header('cache-control', 'public, max-age=300').send(companiesHtml.html);
   });
+  app.get('/terms', async (_req, reply) => reply.type('text/html; charset=utf-8').send(termsPage()));
   app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(privacyPage(base, site)));
   app.get('/llms.txt', async (_req, reply) => reply.type('text/plain; charset=utf-8').send(llmsTxt(base, site)));
   app.get('/.well-known/watchtower.json', async () => wellKnown(base, site));
