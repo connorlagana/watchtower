@@ -478,6 +478,38 @@ describe('Eightfold', () => {
     expect(x.jobs[0]!.company).toBe('Acme');
   });
 
+  it('reads tenants on the older endpoint through it, with the posting text', () => {
+    const legacy = { ...site, origin: 'https://hsbc.eightfold.ai', domain: 'hsbc.com', legacy: true };
+    expect(resolveSource('https://hsbc.eightfold.ai/careers?domain=hsbc.com')).toEqual({ adapter: 'eightfold', fetchUrl: 'https://hsbc.eightfold.ai/api/apply/v2/jobs?domain=hsbc.com&start=0&num=10' });
+    expect(efPageUrl(legacy, 20)).toBe('https://hsbc.eightfold.ai/api/apply/v2/jobs?domain=hsbc.com&start=20&num=10');
+    const body = JSON.stringify({
+      count: 1435,
+      positions: [
+        {
+          id: 563774612161615,
+          display_job_id: '57513',
+          name: 'AVP US Liquidity Management',
+          locations: ['New York, New York, United States'],
+          t_create: 1787694138,
+          department: 'Finance',
+          canonicalPositionUrl: 'https://portal.careers.hsbc.com/careers/job/563774612161615',
+          work_location_option: 'remote',
+          job_description: '<p>At least 7 years of experience in treasury. Base salary $150,000 - $190,000 per year.</p>',
+        },
+      ],
+    });
+    const parsed = parseEightfoldPage(body, legacy);
+    expect(parsed.total).toBe(1435);
+    expect(parsed.jobs[0]).toMatchObject({
+      key: 'job:eightfold:57513',
+      location: 'New York, New York, United States, Remote',
+      url: 'https://portal.careers.hsbc.com/careers/job/563774612161615',
+      posted_at: '2026-08-25T21:42:18.000Z',
+      experience_years: 7,
+      salary: { min: 150_000, max: 190_000, period: 'year' },
+    });
+  });
+
   it('reads the newest MAX_JOBS and keeps what it read when a later page is refused', async () => {
     const urls: string[] = [];
     const full = await collectEightfold(site, page(21417, position(1, 'Role 1')), async (url) => {
@@ -559,6 +591,36 @@ describe('SuccessFactors', () => {
     expect(small).toEqual(Array.from({ length: SF_MAX_PAGES - 1 }, (_, i) => sfPageUrl(origin, (i + 1) * 10)));
     expect((await collectSuccessFactors(search, tiles(1, ...pageOf(0, 1)), async () => '')).complete).toBe(true);
     await expect(collectSuccessFactors(search, tiles(282), async () => '')).rejects.toThrow();
+  });
+
+  it('reads the sitemap when the search page lists no jobs (themes that render results with JavaScript)', async () => {
+    const rss = `<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"><channel><title>Careers</title>
+      <item><title>Staff iOS Engineer (Nashua, NH, US)</title><description><![CDATA[&lt;p&gt;5+ years of iOS experience. Pay range $114,400 - $220,200&lt;/p&gt;]]></description>
+      <link>${origin}/job/Nashua-Staff-iOS-Engineer-NH-03060/1388984400/</link><g:id>1388984400</g:id><g:job_function>Engineering</g:job_function><g:location>Nashua, NH, US</g:location></item>
+    </channel></rss>`;
+    const urls: string[] = [];
+    const x = await collectSuccessFactors(search, '<div class="unify-search"></div>', async (url) => (urls.push(url), rss));
+    expect(urls).toEqual([`${origin}/sitemap.xml`]);
+    expect(x.complete).toBe(true);
+    expect(x.jobs).toEqual([
+      {
+        key: 'job:successfactors:1388984400',
+        title: 'Staff iOS Engineer',
+        location: 'Nashua, NH, US',
+        department: 'Engineering',
+        company: 'Paramount',
+        url: `${origin}/job/Nashua-Staff-iOS-Engineer-NH-03060/1388984400/`,
+        source: 'successfactors',
+        experience_years: 5,
+        salary: expect.objectContaining({ min: 114_400, max: 220_200 }),
+      },
+    ]);
+
+    const urlset = `<urlset><url><loc>${origin}/QuikTrip/job/Pendleton-Part-Time-Clerk-SC-29670/1432598100/</loc></url><url><loc>${origin}/about/</loc></url></urlset>`;
+    expect((await collectSuccessFactors(search, '', async () => urlset)).jobs).toEqual([
+      { key: 'job:successfactors:1432598100', title: 'Pendleton Part Time Clerk SC 29670', company: 'Paramount', url: `${origin}/QuikTrip/job/Pendleton-Part-Time-Clerk-SC-29670/1432598100/`, source: 'successfactors', partial: true },
+    ]);
+    await expect(collectSuccessFactors(search, '', async () => '<urlset></urlset>')).rejects.toThrow();
   });
 });
 

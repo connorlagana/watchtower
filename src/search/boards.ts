@@ -4,7 +4,7 @@
  * industry, that Watchtower monitors on its own, so a search watch (filters,
  * no URL) has postings to match.
  *
- * 1687 boards. Every one answered its platform's public listing API with
+ * 1705 boards. Every one answered its platform's public listing API with
  * open jobs when the list was last verified (2026-10-07). Most were found with
  * scripts/discover-boards.ts from the public Y Combinator company directory;
  * the rest are well-known tech companies and large employers (Fortune 500,
@@ -292,21 +292,32 @@ const ORACLE = [
 
 /** Eightfold career sites (see extract/eightfold.ts). */
 const EIGHTFOLD = [
+  'https://albemarle.eightfold.ai/careers?domain=albemarle.com',
+  'https://bayer.eightfold.ai/careers?domain=bayer.com',
+  'https://bcg.eightfold.ai/careers?domain=bcg.com',
   'https://caci.eightfold.ai/careers?domain=caci.com',
   'https://dsm.eightfold.ai/careers?domain=dsm.com',
   'https://eaton.eightfold.ai/careers?domain=eaton.com',
   'https://ericsson.eightfold.ai/careers?domain=ericsson.com',
+  'https://fcx.eightfold.ai/careers?domain=fcx.com',
+  'https://fluor.eightfold.ai/careers?domain=fluor.com',
+  'https://hsbc.eightfold.ai/careers?domain=hsbc.com',
   'https://infineon.eightfold.ai/careers?domain=infineon.com',
+  'https://insight.eightfold.ai/careers?domain=insight.com',
   'https://jhu.eightfold.ai/careers?domain=jhu.edu',
   'https://lamresearch.eightfold.ai/careers?domain=lamresearch.com',
+  'https://libertymutual.eightfold.ai/careers?domain=libertymutual.com',
   'https://lockheedmartin.eightfold.ai/careers?domain=lockheedmartin.com',
   'https://lumen.eightfold.ai/careers?domain=lumen.com',
   'https://qualcomm.eightfold.ai/careers?domain=qualcomm.com',
   'https://ralliant.eightfold.ai/careers?domain=ralliant.com',
   'https://slb.eightfold.ai/careers?domain=slb.com',
   'https://starbucks.eightfold.ai/careers?domain=starbucks.com',
+  'https://stmicroelectronics.eightfold.ai/careers?domain=stmicroelectronics.com',
+  'https://symetra.eightfold.ai/careers?domain=symetra.com',
   'https://trinet.eightfold.ai/careers?domain=trinet.com',
   'https://ukg.eightfold.ai/careers?domain=ukg.com',
+  'https://vale.eightfold.ai/careers?domain=vale.com',
   'https://vialto.eightfold.ai/careers?domain=vialto.com',
   'https://vodafone.eightfold.ai/careers?domain=vodafone.com',
   'https://whirlpool.eightfold.ai/careers?domain=whirlpool.com',
