@@ -222,6 +222,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(rows.map((r) => r.source)).toEqual(['smithery', null, 'oauth']);
     expect(rows[0]!.user_agent).toBe('curl/8.7.1');
     expect(rows[2]!.user_agent).toBe('Test App');
+    // The consent cannot see the ?ref= tag; the app's first MCP connection brings it.
+    const viaRef = await oauthToken();
+    const tagged = new McpClient({ name: 'chatgpt', version: '1.0.0' });
+    await tagged.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp?ref=Directory`), { requestInit: { headers: { authorization: `Bearer ${viaRef}` } } }));
+    await tagged.close();
+    expect((await db.query('SELECT source FROM clients ORDER BY created_at')).rows.map((r) => r.source)).toEqual(['smithery', null, 'oauth', 'directory']);
     const text = (await app.inject({ url: '/metrics' })).body;
     expect(text).toContain('watchtower_mcp_initialize_total{client="claude-code",ref="claude-plugin"} 1');
     expect(text).toContain('watchtower_clients_created_7d{source="smithery"} 1');
@@ -234,6 +240,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     await app.inject({ url: '/', headers: { 'user-agent': chrome } });
     await app.inject({ url: '/llms.txt', headers: { 'user-agent': 'Mozilla/5.0 (compatible; ClaudeBot/1.0; +claudebot@anthropic.com)' } });
     await app.inject({ url: '/robots.txt', headers: { 'user-agent': 'curl/8.7.1' } });
+    await app.inject({ url: '/docs', headers: { 'user-agent': chrome } });
     await app.inject({ url: '/nope', headers: { 'user-agent': chrome } }); // 404s are not counted
 
     const token = await newToken();
@@ -247,6 +254,7 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     const second = await connectMcp(await oauthToken(), 'cursor'); // a second user, connected through OAuth
     await second.callTool({ name: 'watch_jobs', arguments: { url: `${origin}/page` } });
     await second.close();
+    await api('GET', '/v1/companies'); // no token: counted, but for no user
 
     const { rows } = await db.query<{ tool: string; via: string; calls: number }>('SELECT tool, via, calls FROM usage_daily ORDER BY tool, via');
     expect(rows).toEqual([
@@ -256,10 +264,12 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
       { tool: 'watch_jobs', via: 'mcp', calls: 1 },
     ]);
     const counts = (await db.query<{ metric: string; dim: string; n: number }>('SELECT metric, dim, n FROM counts_daily ORDER BY metric, dim')).rows;
-    expect(counts).toHaveLength(4);
+    expect(counts).toHaveLength(6);
     expect(counts).toEqual(
       expect.arrayContaining([
+        { metric: 'anonymous_search', dim: 'rest:list_companies', n: 1 },
         { metric: 'mcp_connect', dim: 'cursor', n: 2 },
+        { metric: 'page_view', dim: '/docs|browser', n: 1 },
         { metric: 'page_view', dim: '/llms.txt|ai', n: 1 },
         { metric: 'page_view', dim: '/robots.txt|other', n: 1 },
         { metric: 'page_view', dim: '/|browser', n: 2 },
@@ -272,12 +282,15 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(page.statusCode).toBe(200);
     expect(page.headers['cache-control']).toBe('no-store');
     const stats = await loadStats(ctx);
-    expect(stats.kpis).toMatchObject({ activeToday: 2, newToday: 2, callsToday: 5, peopleViewsToday: 2 });
+    expect(stats.kpis).toMatchObject({ activeToday: 2, newToday: 2, callsToday: 5, anonCallsToday: 1, peopleViewsToday: 3 });
+    expect(stats.dailyAnonCalls.at(-1)).toBe(1);
+    expect(stats.tools).toContainEqual({ tool: 'list_companies', via: 'rest', anonymous: true, today: 1, d7: 1, d30: 1, clients30: null });
     expect(stats.dailyActive).toHaveLength(30);
     expect(stats.dailyActive.at(-1)).toBe(2);
     expect(stats.mcpClients).toEqual([{ client: 'cursor', d7: 2, d30: 2 }]);
     expect(page.body).toContain('Daily active users');
     expect(page.body).toContain('<td>get_changes</td>');
+    expect(page.body).toContain('REST, no token');
   });
 
   it('requires a valid token', async () => {
@@ -309,6 +322,9 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     site.page = [...site.page, { id: 'p2', title: 'Second role', location: 'Berlin' }];
     site.etag = '"e2"';
     expect((await check(t, id)).body.check).toMatchObject({ ok: true, changed: true, changes: 1 });
+    // The previous snapshot is gone: only the current one is ever read.
+    const snaps = await db.query('SELECT s.id FROM snapshots s JOIN resources r ON r.id = s.resource_id WHERE r.url = $1', [`${origin}/page`]);
+    expect(snaps.rows).toHaveLength(1);
 
     const peek = await api('GET', '/v1/changes?peek=true', t);
     expect(peek.body.changes).toHaveLength(1);
@@ -631,6 +647,10 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect((await call('list_watches')).watches.map((x: any) => x.id)).toEqual([w.body.id]);
     expect((await call('delete_watch', { watch_id: w.body.id })).deleted).toBe(true);
     await mcp.close();
+    // The client the consent made is gone, and its call is credited to the client the connection moved to: one user, not two.
+    expect((await db.query('SELECT count(*)::int AS n FROM clients')).rows[0].n).toBe(1);
+    expect((await db.query('SELECT count(DISTINCT client_id)::int AS n FROM usage_daily')).rows[0].n).toBe(1);
+    expect((await db.query("SELECT calls FROM usage_daily WHERE tool = 'list_watches' AND via = 'mcp'")).rows[0].calls).toBe(3);
 
     // A connection whose own client already has watches is not moved.
     const other = await newToken();
@@ -1000,6 +1020,15 @@ describe.skipIf(!DATABASE_URL)('Watchtower integration', () => {
     expect(rows[0].delete_reason).toBe('expired');
     await db.query("UPDATE resources SET next_check_at = now() - interval '1 minute'");
     expect(await claimDue(ctx, 10)).toEqual([]);
+  });
+
+  it('deletes the client an OAuth consent made when its code is never exchanged', async () => {
+    const abandoned = await oauth(); // consent given, code never exchanged
+    expect(abandoned.code).not.toBe('');
+    await oauthToken(); // completed: keeps its client
+    await db.query("UPDATE clients SET created_at = now() - interval '2 hours'");
+    expect(await runMaintenance(ctx)).toMatchObject({ deletedClients: 1 });
+    expect((await db.query('SELECT count(*)::int AS n FROM clients')).rows[0].n).toBe(1);
   });
 
   it('supports at-least-once reads with peek + ack', async () => {

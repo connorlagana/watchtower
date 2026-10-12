@@ -192,7 +192,8 @@ export async function registerOAuthRoutes(app: FastifyInstance, ctx: Ctx, opts: 
       // New clients draw on the same per-address budget as POST /v1/clients.
       const allowed = (await hit(db, clientBucket(req.ip), { name: 'client_creation', max: opts.clientCreationPerHour, windowSeconds: 3600 })).allowed;
       if (!allowed) return consent(reply, r.client, r.redirectUri, f, 'Too many clients were created from your network recently. Try again later, or paste an existing token.');
-      clientId = (await createClient(ctx, { source: 'oauth', userAgent: r.client.client_name })).client.id;
+      // source stays 'oauth' until the app's first MCP connection brings its ?ref= tag (attributeSource).
+      clientId = (await createClient(ctx, { source: 'oauth', userAgent: r.client.client_name }, false)).client.id;
     }
 
     const code = randomBytes(32).toString('base64url');

@@ -257,6 +257,9 @@ async function checkWithLease(ctx: Ctx, r: ResourceRow): Promise<CheckOutcome> {
          WHERE id = $1`,
         [r.id, res.status, res.headers.etag ?? null, res.headers['last-modified'] ?? null, interval, snapshotId, changeIds.length > 0],
       );
+      // Only the current snapshot is ever read (the next check diffs against it); older ones are dead weight,
+      // each a full copy of the board's job list.
+      await client.query('DELETE FROM snapshots WHERE resource_id = $1 AND id <> $2', [r.id, snapshotId]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});

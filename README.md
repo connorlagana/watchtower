@@ -218,7 +218,7 @@ A search watch has no resource of its own. It reads the same change events, from
   - backs off exponentially on errors and honors `Retry-After` on 429.
 - **Scheduling and maintenance.** Due resources are claimed with a lease, so you can run several replicas; set `RUN_SCHEDULER=false` on API-only replicas. The same loop delivers webhooks and runs maintenance under an advisory lock. Maintenance:
   - expires unread watches;
-  - deletes changes after `CHANGE_RETENTION_DAYS` and non-current snapshots after `SNAPSHOT_RETENTION_DAYS`;
+  - deletes changes after `CHANGE_RETENTION_DAYS` and non-current snapshots after `SNAPSHOT_RETENTION_DAYS` (default 0: a check already replaces its board's previous snapshot);
   - removes unwatched resources and idle clients;
   - clears old rate-limit windows.
 

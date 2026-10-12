@@ -78,6 +78,12 @@ export async function runMaintenance(ctx: Ctx): Promise<MaintenanceReport | null
         `DELETE FROM clients c WHERE c.last_seen_at < now() - interval '90 days'
             AND NOT EXISTS (SELECT 1 FROM watches w WHERE w.client_id = c.id AND w.deleted_at IS NULL)`,
       );
+      // A client an OAuth consent created whose code was never exchanged: nobody holds a token for it.
+      report.deletedClients += await q(
+        `DELETE FROM clients c WHERE NOT c.token_shown AND c.created_at < now() - interval '1 hour'
+            AND NOT EXISTS (SELECT 1 FROM client_tokens t WHERE t.client_id = c.id)
+            AND NOT EXISTS (SELECT 1 FROM watches w WHERE w.client_id = c.id)`,
+      );
       await q("DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'");
       await q('DELETE FROM oauth_codes WHERE expires_at < now()');
       await q("DELETE FROM usage_daily WHERE day < now() - interval '400 days'");
@@ -85,6 +91,8 @@ export async function runMaintenance(ctx: Ctx): Promise<MaintenanceReport | null
       await q("DELETE FROM host_leases WHERE leased_until < now() - interval '1 hour'");
       await q("DELETE FROM webhook_deliveries WHERE status <> 'pending' AND created_at < now() - interval '7 days'");
       if (Object.values(report).some((n) => n > 0)) ctx.log.info(report, 'maintenance');
+      const { rows: size } = await client.query<{ mb: number }>('SELECT (pg_database_size(current_database()) / 1048576)::int AS mb');
+      if (size[0]!.mb > c.dbSizeWarnMb) ctx.log.warn({ mb: size[0]!.mb, warnAt: c.dbSizeWarnMb }, 'database is getting large: check the volume size');
       return report;
     } finally {
       await client.query('SELECT pg_advisory_unlock(727275)');

@@ -69,7 +69,7 @@ export const metrics = {
 };
 
 export async function renderMetrics(db: Db): Promise<string> {
-  const { rows } = await db.query<{ watches: number; search_watches: number; resources: number; directory: number; overdue: number; failing: number; blocked: number; webhooks_pending: number }>(
+  const { rows } = await db.query<{ watches: number; search_watches: number; resources: number; directory: number; overdue: number; failing: number; blocked: number; webhooks_pending: number; db_bytes: number }>(
     `SELECT
        (SELECT count(*) FROM watches WHERE deleted_at IS NULL)::int AS watches,
        (SELECT count(*) FROM watches WHERE deleted_at IS NULL AND resource_id IS NULL)::int AS search_watches,
@@ -80,7 +80,8 @@ export async function renderMetrics(db: Db): Promise<string> {
        (SELECT count(*) FROM resources
          WHERE last_checked_at > now() - interval '1 hour'
            AND (last_error LIKE 'BOT_CHALLENGE%' OR last_error LIKE 'ACCESS_DENIED%' OR last_error LIKE 'RATE_LIMITED%'))::int AS blocked,
-       (SELECT count(*) FROM webhook_deliveries WHERE status = 'pending')::int AS webhooks_pending`,
+       (SELECT count(*) FROM webhook_deliveries WHERE status = 'pending')::int AS webhooks_pending,
+       pg_database_size(current_database())::float8 AS db_bytes`,
   );
   const g = rows[0]!;
   const sources = await db.query<{ source: string; n: number }>(
@@ -97,6 +98,7 @@ export async function renderMetrics(db: Db): Promise<string> {
     gauge('watchtower_failing_resources', 'Resources whose last check failed.', g.failing),
     gauge('watchtower_blocked_resources_1h', 'Resources that returned 401/403/429 or a bot challenge in the last hour.', g.blocked),
     gauge('watchtower_webhooks_pending', 'Webhook deliveries waiting to be sent or retried.', g.webhooks_pending),
+    gauge('watchtower_database_bytes', 'Size of the database on disk.', g.db_bytes),
     [
       '# HELP watchtower_clients_created_7d Clients created in the last 7 days, by the ?ref= tag they arrived with.',
       '# TYPE watchtower_clients_created_7d gauge',

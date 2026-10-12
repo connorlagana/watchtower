@@ -59,6 +59,8 @@ export interface Config {
   maxActiveResources: number;
   changeRetentionDays: number;
   snapshotRetentionDays: number;
+  /** Maintenance logs a warning once the database is larger than this. */
+  dbSizeWarnMb: number;
 
   trustProxy: boolean;
   rateLimitPerMinute: number;
@@ -86,6 +88,12 @@ export interface Config {
   statsToken: string | null;
   /** Served at /.well-known/mcp-registry-auth to prove domain ownership to the MCP Registry ("v=MCPv1; k=ed25519; p=..."). */
   mcpRegistryAuth: string | null;
+  /** Resend API key for the website's daily email alerts; unset turns email off (new matches still show on /alerts). */
+  resendApiKey: string | null;
+  /** From address for alert emails, e.g. "Watchtower <alerts@watchtower.lat>" (a domain verified with Resend). */
+  alertsFrom: string;
+  /** Results a signed-out visitor sees per search on /jobs before being asked to sign up. */
+  freeResults: number;
 }
 
 export function loadConfig(): Config {
@@ -126,7 +134,8 @@ export function loadConfig(): Config {
     maxResourcesPerHost: int('MAX_RESOURCES_PER_HOST', 100),
     maxActiveResources: int('MAX_ACTIVE_RESOURCES', 50_000),
     changeRetentionDays: int('CHANGE_RETENTION_DAYS', 30),
-    snapshotRetentionDays: int('SNAPSHOT_RETENTION_DAYS', 7),
+    snapshotRetentionDays: int('SNAPSHOT_RETENTION_DAYS', 0),
+    dbSizeWarnMb: int('DB_SIZE_WARN_MB', 2048),
 
     trustProxy: bool('TRUST_PROXY', false),
     rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 120),
@@ -143,5 +152,8 @@ export function loadConfig(): Config {
     metricsToken: process.env.METRICS_TOKEN || null,
     statsToken: process.env.STATS_TOKEN || process.env.METRICS_TOKEN || null,
     mcpRegistryAuth: process.env.MCP_REGISTRY_AUTH || null,
+    resendApiKey: process.env.RESEND_API_KEY || null,
+    alertsFrom: str('ALERTS_FROM', 'Watchtower <alerts@watchtower.lat>'),
+    freeResults: int('FREE_RESULTS', 3),
   };
 }

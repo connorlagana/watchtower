@@ -122,8 +122,10 @@ export function privacyPage(base: string, info: SiteInfo): string {
     'Watchtower privacy',
     `<h1>Privacy</h1>
   <p class="muted">What Watchtower (${esc(base)}) stores, why, and for how long.</p>
-  <h2>No accounts</h2>
-  <p>Watchtower has no sign-up. A client is an anonymous random token; only a SHA-256 hash of the token is stored. Watchtower never asks for a name, email address or résumé.</p>
+  <h2>Agents: no accounts</h2>
+  <p>Agents need no sign-up. A client is an anonymous random token; only a SHA-256 hash of the token is stored. Watchtower never asks an agent for a name, email address or résumé.</p>
+  <h2>Website accounts</h2>
+  <p>If you create an account on <a href="/jobs">/jobs</a>, Watchtower stores your email address and a salted scrypt hash of your password (never the password itself), plus a session cookie so you stay signed in for up to 30 days. Your email is used only to sign you in and, if you leave alerts on, to send a daily email of new jobs matching your saved searches. Turn emails off or delete your account at any time on <a href="/alerts">/alerts</a>; deleting it removes your email, password hash and saved searches immediately.</p>
   <h2>What is stored</h2>
   <ul>
     <li><strong>Your watches</strong>: the query text, filters, board URLs, optional label and optional webhook URL you send, so they can be checked and matched. Write nothing personal in a query or label.</li>
@@ -139,7 +141,7 @@ export function privacyPage(base: string, info: SiteInfo): string {
     <li>Detected changes are deleted after 30 days by default.</li>
   </ul>
   <h2>Sharing</h2>
-  <p>Watchtower does not sell or share this data, show ads or use it to train models. The only outbound requests carrying your data are the webhook deliveries you configure. Boards you watch by URL are added to the shared directory that every search watch covers, without anything that identifies you.</p>
+  <p>Watchtower does not sell or share this data, show ads or use it to train models. The only outbound requests carrying your data are the webhook deliveries you configure and, for website accounts with alerts on, alert emails sent through the email provider Resend. Boards you watch by URL are added to the shared directory that every search watch covers, without anything that identifies you.</p>
   <h2>Deleting your data</h2>
   <p>Call <code>delete_watch</code> (or <code>DELETE /v1/watches/{id}</code>) to remove a watch, or simply stop using the token. Questions: <a href="https://github.com/connorlagana/watchtower/issues">github.com/connorlagana/watchtower/issues</a>.</p>`,
     { prose: true },
@@ -443,7 +445,7 @@ function markdown(md: string): string {
   return out.join('\n  ');
 }
 
-function esc(s: string): string {
+export function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 }
 
@@ -467,6 +469,7 @@ function page(title: string, main: string, opts: { prose?: boolean; script?: str
 <body>
 <header class="nav">
   <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>Watchtower</a>
+  <a class="nav__link" href="/jobs">Find jobs</a>
   <a class="nav__link" href="/docs">Docs</a>
   <a class="nav__link nav__wide" href="/#faq">FAQ</a>
   <span class="nav__gap"></span>
@@ -483,6 +486,7 @@ ${main}
       <p class="foot__tag">Tech job monitoring for AI agents.</p>
     </div>
     <nav aria-label="Footer">
+      <a href="/jobs">Find $300k+ jobs</a>
       <a href="/#install">Connect</a>
       <a href="/docs">Docs</a>
       <a href="/companies">Companies</a>
@@ -514,7 +518,7 @@ ${opts.script ? `<script>${opts.script}</script>` : ''}
 </html>`;
 }
 
-const STYLES = `
+export const STYLES = `
   @font-face { font-family: "Atkinson Hyperlegible Next"; src: url(/fonts/atkinson-hyperlegible-next.woff2) format("woff2"); font-weight: 200 800; font-display: swap; }
   @font-face { font-family: "Atkinson Hyperlegible Mono"; src: url(/fonts/atkinson-hyperlegible-mono.woff2) format("woff2"); font-weight: 200 800; font-display: swap; }
   @font-face { font-family: "Crimson Pro"; src: url(/fonts/crimson-pro.woff2) format("woff2"); font-weight: 200 900; font-display: swap; }

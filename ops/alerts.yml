@@ -35,6 +35,14 @@ groups:
         annotations:
           summary: "{{ $value }} webhook deliveries pending"
 
+      - alert: WatchtowerDatabaseLarge
+        # Postgres stops accepting connections when its volume fills, which takes the whole site down.
+        expr: watchtower_database_bytes > 2 * 1024 * 1024 * 1024
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: "Database is {{ $value | humanize1024 }}B: check the volume size"
+
       - alert: WatchtowerSlowFetches
         expr: histogram_quantile(0.95, sum(rate(watchtower_fetch_duration_seconds_bucket[15m])) by (le)) > 10
         for: 30m

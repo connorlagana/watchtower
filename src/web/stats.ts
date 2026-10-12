@@ -148,8 +148,8 @@ export function statsPage(s: Stats): string {
     ${tile(fmt(k.active7d), 'Active users, 7 days')}
     ${tile(fmt(k.active30d), 'Active users, 30 days')}
     ${tile(fmt(k.clientsWithWatches), 'Users with live watches', `${fmt(k.liveWatches)} live watches`)}
-    ${tile(fmt(k.newToday), 'New users today', `${fmt(k.clientsTotal)} users all time`)}
-    ${tile(fmt(k.callsToday), 'Tool calls today')}
+    ${tile(fmt(k.newToday), 'New users today', `${fmt(k.clientsTotal)} users on record; idle ones are removed after 90 days`)}
+    ${tile(fmt(k.callsToday + k.anonCallsToday), 'Tool calls today', `${fmt(k.anonCallsToday)} without a token`)}
     ${tile(fmt(k.peopleViewsToday), 'Page views today', 'people in a browser')}
     ${tile(pct, 'Came back', `${fmt(s.retention.returned)} of ${fmt(s.retention.cohort)} new users in 30 days used it on a later day`)}
   </div>
@@ -163,11 +163,18 @@ export function statsPage(s: Stats): string {
   ${barChart(s.days, [{ name: 'New users', color: '--s1', values: s.dailyNew }], 'new users')}
 
   <h2>Tool calls</h2>
-  <p class="sub">Every call to watch_jobs, get_changes, list_watches and the rest.</p>
-  ${barChart(s.days, [{ name: 'Tool calls', color: '--s1', values: s.dailyCalls }], 'tool calls')}
+  <p class="sub">Every call to watch_jobs, search_jobs, get_changes and the rest. search_jobs and list_companies need no token.</p>
+  ${barChart(
+    s.days,
+    [
+      { name: 'With a token', color: '--s1', values: s.dailyCalls },
+      { name: 'Without a token', color: '--s2', values: s.dailyAnonCalls },
+    ],
+    'tool calls',
+  )}
 
   <h2>Page views</h2>
-  <p class="sub">The homepage, llms.txt, robots.txt, the privacy page and the .well-known files, by who asked.</p>
+  <p class="sub">The homepage, docs, companies, privacy and terms pages, llms.txt, robots.txt and the .well-known files, by who asked.</p>
   ${barChart(
     s.days,
     [
@@ -179,8 +186,12 @@ export function statsPage(s: Stats): string {
   )}
 
   <h2>Tools</h2>
-  <p class="sub">Last 30 days.</p>
-  ${table(['Tool', 'Via', 'Today', '7 days', '30 days', 'Users'], s.tools.map((t) => [t.tool, t.via.toUpperCase(), t.today, t.d7, t.d30, t.clients30]), 'No tool calls yet.')}
+  <p class="sub">Last 30 days. Calls without a token have no user to count.</p>
+  ${table(
+    ['Tool', 'Via', 'Today', '7 days', '30 days', 'Users'],
+    s.tools.map((t) => [t.tool, `${t.via.toUpperCase()}${t.anonymous ? ', no token' : ''}`, t.today, t.d7, t.d30, t.clients30 ?? '–']),
+    'No tool calls yet.',
+  )}
 
   <div class="cols">
     <section>

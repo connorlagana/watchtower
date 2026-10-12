@@ -1,5 +1,5 @@
 /**
- * Usage history behind /stats: who used which tool on which day, page views and MCP connections.
+ * Usage history behind /stats: who used which tool on which day, tokenless searches, page views and MCP connections.
  * Recording never fails the request it belongs to.
  */
 import type { Ctx } from './context.js';
@@ -57,6 +57,8 @@ export interface Stats {
     liveWatches: number;
     newToday: number;
     callsToday: number;
+    /** search_jobs and list_companies calls sent without a token, so with no user to count. */
+    anonCallsToday: number;
     peopleViewsToday: number;
   };
   /** Last 30 UTC days, oldest first. */
@@ -64,8 +66,10 @@ export interface Stats {
   dailyActive: number[];
   dailyNew: number[];
   dailyCalls: number[];
+  dailyAnonCalls: number[];
   dailyViews: { browser: number[]; ai: number[]; other: number[] };
-  tools: { tool: string; via: string; today: number; d7: number; d30: number; clients30: number }[];
+  /** clients30 is null for calls without a token. */
+  tools: { tool: string; via: string; anonymous: boolean; today: number; d7: number; d30: number; clients30: number | null }[];
   mcpClients: { client: string; d7: number; d30: number }[];
   sources: { source: string; new30: number; active7: number }[];
   pages: { path: string; browser: number; ai: number; other: number }[];
@@ -85,25 +89,36 @@ export async function loadStats(ctx: Ctx): Promise<Stats> {
       (SELECT count(*) FROM watches WHERE deleted_at IS NULL)::int AS "liveWatches",
       (SELECT count(*) FROM clients WHERE (created_at AT TIME ZONE 'UTC')::date = ${TODAY})::int AS "newToday",
       (SELECT coalesce(sum(calls), 0) FROM usage_daily WHERE day = ${TODAY})::int AS "callsToday",
+      (SELECT coalesce(sum(n), 0) FROM counts_daily WHERE day = ${TODAY} AND metric = 'anonymous_search')::int AS "anonCallsToday",
       (SELECT coalesce(sum(n), 0) FROM counts_daily WHERE day = ${TODAY} AND metric = 'page_view' AND dim LIKE '%|browser')::int AS "peopleViewsToday"`);
 
-  const series = await q<{ day: string; active: number; new: number; calls: number; browser: number; ai: number; other: number }>(`
+  const series = await q<{ day: string; active: number; new: number; calls: number; anon: number; browser: number; ai: number; other: number }>(`
     SELECT to_char(d, 'YYYY-MM-DD') AS day,
       (SELECT count(DISTINCT client_id) FROM usage_daily u WHERE u.day = d)::int AS active,
       (SELECT count(*) FROM clients c WHERE (c.created_at AT TIME ZONE 'UTC')::date = d)::int AS new,
       (SELECT coalesce(sum(calls), 0) FROM usage_daily u WHERE u.day = d)::int AS calls,
+      (SELECT coalesce(sum(n), 0) FROM counts_daily v WHERE v.day = d AND v.metric = 'anonymous_search')::int AS anon,
       (SELECT coalesce(sum(n), 0) FROM counts_daily v WHERE v.day = d AND v.metric = 'page_view' AND v.dim LIKE '%|browser')::int AS browser,
       (SELECT coalesce(sum(n), 0) FROM counts_daily v WHERE v.day = d AND v.metric = 'page_view' AND v.dim LIKE '%|ai')::int AS ai,
       (SELECT coalesce(sum(n), 0) FROM counts_daily v WHERE v.day = d AND v.metric = 'page_view' AND v.dim LIKE '%|other')::int AS other
     FROM ${days} ORDER BY d`);
 
+  // Calls without a token are counted as 'anonymous_search' with dim '<via>:<tool>'.
   const tools = await q<Stats['tools'][number]>(`
-    SELECT tool, via,
+    SELECT tool, via, false AS anonymous,
       coalesce(sum(calls) FILTER (WHERE day = ${TODAY}), 0)::int AS today,
       coalesce(sum(calls) FILTER (WHERE day > ${TODAY} - 7), 0)::int AS d7,
       sum(calls)::int AS d30,
       count(DISTINCT client_id)::int AS clients30
-    FROM usage_daily WHERE day > ${TODAY} - 30 GROUP BY tool, via ORDER BY d30 DESC, tool`);
+    FROM usage_daily WHERE day > ${TODAY} - 30 GROUP BY tool, via
+    UNION ALL
+    SELECT split_part(dim, ':', 2), split_part(dim, ':', 1), true,
+      coalesce(sum(n) FILTER (WHERE day = ${TODAY}), 0)::int,
+      coalesce(sum(n) FILTER (WHERE day > ${TODAY} - 7), 0)::int,
+      sum(n)::int,
+      NULL
+    FROM counts_daily WHERE metric = 'anonymous_search' AND day > ${TODAY} - 30 GROUP BY dim
+    ORDER BY d30 DESC, tool, anonymous`);
 
   const mcpClients = await q<Stats['mcpClients'][number]>(`
     SELECT dim AS client, coalesce(sum(n) FILTER (WHERE day > ${TODAY} - 7), 0)::int AS d7, sum(n)::int AS d30
@@ -142,6 +157,7 @@ export async function loadStats(ctx: Ctx): Promise<Stats> {
     dailyActive: series.map((r) => r.active),
     dailyNew: series.map((r) => r.new),
     dailyCalls: series.map((r) => r.calls),
+    dailyAnonCalls: series.map((r) => r.anon),
     dailyViews: { browser: series.map((r) => r.browser), ai: series.map((r) => r.ai), other: series.map((r) => r.other) },
     tools,
     mcpClients,

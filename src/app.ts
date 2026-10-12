@@ -1,13 +1,14 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerApiRoutes } from './api/routes.js';
+import { registerWebRoutes } from './api/web.js';
 import { authChallenge, registerOAuthRoutes } from './api/oauth.js';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { buildMcpServer } from './mcp/server.js';
-import { authenticate, bearerToken, clientOrigin } from './services/clients.js';
+import { attributeSource, authenticate, bearerToken, clientOrigin } from './services/clients.js';
 import { AppError, type Ctx } from './services/context.js';
 import { metrics, renderMetrics } from './services/metrics.js';
 import { clientBucket, enforce, hit, registerRateLimits } from './services/rateLimit.js';
@@ -36,7 +37,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   });
 
   // Daily view counts for the public pages, split into people, AI assistants and other bots. Nothing per visitor is kept.
-  const countedPages = new Set(['/', '/companies', '/llms.txt', '/privacy', '/terms', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
+  const countedPages = new Set(['/', '/jobs', '/signup', '/signin', '/docs', '/companies', '/llms.txt', '/privacy', '/terms', '/robots.txt', '/.well-known/watchtower.json', '/.well-known/mcp.json', '/.well-known/mcp-server-card']);
   app.addHook('onResponse', async (req, reply) => {
     const path = req.url.split('?')[0]!;
     if (req.method === 'GET' && reply.statusCode === 200 && countedPages.has(path)) {
@@ -121,6 +122,9 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   const searchLimit = { name: 'search', max: config.searchPerMinute, windowSeconds: 60 };
   await registerApiRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour, searchLimit });
 
+  // --- website app: /jobs, /signin, /signup, /alerts -------------------------------
+  await registerWebRoutes(app, ctx, { searchLimit, signupPerHour: config.clientCreationPerHour });
+
   // --- OAuth for MCP connections ---------------------------------------------
   await registerOAuthRoutes(app, ctx, { clientCreationPerHour: config.clientCreationPerHour });
 
@@ -142,9 +146,10 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
   app.post('/mcp', async (req, reply) => {
     const origin = clientOrigin(req.query, req.headers['user-agent']);
     const headerToken = bearerToken(req.headers.authorization);
+    let connected: string | undefined;
     if (headerToken) {
       try {
-        await authenticate(ctx, headerToken);
+        connected = (await authenticate(ctx, headerToken)).id;
       } catch {
         return challenge(reply, 'The Watchtower token is unknown or revoked; authorize again.');
       }
@@ -157,6 +162,7 @@ export async function buildApp(config: Config, db: Db, opts: BuildOptions = {}):
       const client = typeof info?.name === 'string' ? info.name.toLowerCase().replace(/[^a-z0-9._ -]/g, '').slice(0, 40) || 'unknown' : 'unknown';
       metrics.mcpInitialize.inc({ client, ref: origin.source ?? 'none' });
       await countDaily(ctx, 'mcp_connect', client);
+      if (connected && origin.source) await attributeSource(ctx, connected, origin.source);
       req.log.info({ mcp_client: client, mcp_client_version: typeof info?.version === 'string' ? info.version.slice(0, 40) : undefined, ref: origin.source }, 'mcp initialize');
     }
     const server = buildMcpServer(ctx, {

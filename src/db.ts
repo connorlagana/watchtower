@@ -8,8 +8,13 @@ pg.types.setTypeParser(20, (v) => Number(v));
 
 export type Db = pg.Pool;
 
-export function createPool(databaseUrl: string): Db {
-  return new pg.Pool({ connectionString: databaseUrl, max: 10 });
+export function createPool(databaseUrl: string, onError: (err: Error) => void = () => {}): Db {
+  const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
+  // A connection the server drops (restart, disk full) emits 'error'. Unhandled, that kills the process; the
+  // pool discards the broken connection on its own and the query in flight still rejects, so logging is enough.
+  pool.on('error', onError);
+  pool.on('connect', (client) => client.on('error', onError));
+  return pool;
 }
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
